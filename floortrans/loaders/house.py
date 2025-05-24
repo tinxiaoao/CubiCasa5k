@@ -359,22 +359,22 @@ class House:
         self.height = height
         self.width = width
         shape = height, width
-        svg = minidom.parse(path)
+        svg = minidom.parse(path)  # 使用 xml.dom.minidom 解析传入的 SVG 文件，后续在 for e in svg.getElementsByTagName('g'): 中遍历 <g> 标签，确定其 id 或 class
         self.walls = np.empty((height, width), dtype=np.uint8)
         self.walls.fill(0)
         self.wall_ids = np.empty((height, width), dtype=np.uint8)
         self.wall_ids.fill(0)
         self.icons = np.zeros((height, width), dtype=np.uint8)
         # junction_id = 0
-        wall_id = 1
-        self.wall_ends = []
-        self.wall_objs = []
-        self.icon_types = []
+        wall_id = 1  # 给每段墙体一个自增的ID
+        self.wall_ends = []  # 后续保存每段墙体的端点坐标，用于连接、拓扑分析
+        self.wall_objs = []  # 存放解析出来的 PolygonWall 对象
+        self.icon_types = []  # 保存识别到的图标或房间类型ID
         self.room_types = []
         self.icon_corners = {'upper_left': [],
                              'upper_right': [],
                              'lower_left': [],
-                             'lower_right': []}
+                             'lower_right': []}    # 存家具四角坐标、开口(门窗)的上下/左右点坐标
         self.opening_corners = {'left': [],
                                 'right': [],
                                 'up': [],
@@ -403,8 +403,8 @@ class House:
                     wall.rr, wall.cc = self._clip_outside(wall.rr, wall.cc)
                     self.wall_objs.append(wall)
                     self.walls[wall.rr, wall.cc] = room_list["Railing"]
-                    self.wall_ids[wall.rr, wall.cc] = wall_id
-                    self.wall_ends.append(wall.end_points)
+                    self.wall_ids[wall.rr, wall.cc] = wall_id  # 用另一个矩阵记录此墙的ID = wall_id
+                    self.wall_ends.append(wall.end_points)  # 记录墙的端点坐标，便于后续连接、合并墙体
 
                     wall_id += 1
 
@@ -563,9 +563,9 @@ class House:
                                 # # room_name = room_name_map[room_name]
                                 # self.representation['labels'].append([center_box, [room_name, 1, 1]])
 
-        self.avg_wall_width = self.get_avg_wall_width()
+        self.avg_wall_width = self.get_avg_wall_width()  # 估计墙的平均厚度，有助于在后续“合并”或识别时使用
 
-        self.new_walls = self.connect_walls(self.wall_objs)
+        self.new_walls = self.connect_walls(self.wall_objs)  # 将相邻或共端点的墙体合并成更大的整体，去除重复小片段
 
         for w in self.new_walls:
             w.change_end_points()
@@ -840,8 +840,7 @@ class House:
                                 points.append(
                                     [point, point, ['point', 3, 3]])
 
-                elif line_1[0][lineDim_1] < fixedValue_2 and \
-                        line_1[1][lineDim_1] > fixedValue_2 and \
+                elif line_1[0][lineDim_1] < fixedValue_2 < line_1[1][lineDim_1] and \
                         line_2[0][lineDim_2] < fixedValue_1 and \
                         line_2[1][lineDim_2] > fixedValue_1:
                     point = [None, None]
