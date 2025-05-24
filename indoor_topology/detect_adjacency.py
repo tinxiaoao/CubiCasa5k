@@ -1,130 +1,209 @@
-import numpy as np
-from scipy.ndimage import binary_dilation, label
-
 def detect_adjacency(region_id_map, wall_array, icon_array):
     """
-    识别平面图中房间之间通过门、窗或墙的连接关系。
-
-    参数:
-        region_id_map (ndarray): 2D数组，每个像素值代表房间ID（背景为0）
-        wall_array (ndarray): 2D数组，墙体像素为1，非墙为0
-        icon_array (ndarray): 2D数组，门窗图标标记（1=门，2=窗，0=无）
-
-    返回:
-        edges字典:
-            键为 (房间ID1, 房间ID2)
-            值为字典:
-              - 'connection_types': set(['door', 'window', 'wall'])
-              - 'num_door_window': 门窗连接段数
-              - 'area_door_window': 门窗连接的总像素面积
-              - 'num_wall': 墙连接段数
-              - 'area_wall': 墙连接的总像素面积
+    Detects adjacency between rooms via doors, windows, and walls.
+    Returns a dict where keys are (room1, room2) tuples and values contain:
+      - 'connection_types': set of {'door', 'window', 'wall'} indicating types of connections.
+      - 'num_door_window': count of door/window openings between the rooms.
+      - 'area_door_window': total area (in pixels) of those door/window openings.
+      - 'num_wall': count of wall segments between the rooms.
+      - 'area_wall': total area (pixels) of those wall segments.
     """
+    import numpy as np
+    from collections import deque
+    from scipy.ndimage import label, binary_dilation, binary_erosion
+
     edges = {}
 
-    def init_edge_entry(id1, id2):
-        """确保房间对在edges字典中已初始化。"""
-        pair = tuple(sorted((int(id1), int(id2))))
-        if pair not in edges:
-            edges[pair] = {
+    def ensure_edge_entry(a, b):
+        """Ensure the edge dictionary has an entry for the room pair (a, b)."""
+        key = (a, b) if a < b else (b, a)
+        if key not in edges:
+            edges[key] = {
                 'connection_types': set(),
                 'num_door_window': 0,
                 'area_door_window': 0,
                 'num_wall': 0,
                 'area_wall': 0
             }
-        return pair
+        return key
 
-    # 🌟 门窗连接检测逻辑
-    icon_mask = (icon_array > 0)
-    icon_mask_dilated = binary_dilation(icon_mask, structure=np.ones((3, 3), bool))
-    labeled_icons, num_icon_clusters = label(icon_mask_dilated, structure=np.ones((3, 3), bool))
+    # 4-connected structuring element (cross-shaped) for labeling and dilation
+    structure = np.array([[0, 1, 0],
+                           [1, 1, 1],
+                           [0, 1, 0]], dtype=bool)
 
-    for label_id in range(1, num_icon_clusters + 1):
-        cluster_mask = (labeled_icons == label_id)
-        if not cluster_mask.any():
-            continue
+    # **Door and Window connections**
+    for icon_val, icon_type in [(1, 'door'), (2, 'window')]:
+        icon_mask = (icon_array == icon_val)
+        labeled_icons, num_icons = label(icon_mask, structure=structure)
+        for lbl in range(1, num_icons + 1):
+            comp_mask = (labeled_icons == lbl)
+            if not comp_mask.any():
+                continue
+            # Dilate the icon region to find adjacent rooms
+            dilated = binary_dilation(comp_mask, structure=structure, border_value=0)
+            neighbor_area = dilated & ~comp_mask  # area just around the icon
+            neighbor_ids = np.unique(region_id_map[neighbor_area])
+            neighbor_ids = neighbor_ids[neighbor_ids > 0]  # exclude background (0)
+            neighbor_ids = np.unique(neighbor_ids)
+            if neighbor_ids.size == 2:
+                a, b = int(neighbor_ids[0]), int(neighbor_ids[1])
+                key = ensure_edge_entry(a, b)
+                edges[key]['connection_types'].add(icon_type)
+                edges[key]['num_door_window'] += 1
+                # Use the mask size (pixels count) as the opening area
+                edges[key]['area_door_window'] += int(comp_mask.sum())
 
-        region_neighbors = set()
-        cluster_coords = np.argwhere(cluster_mask)
+    # **Wall connections**
+    # Get all room IDs (exclude 0 for background)
+    region_ids = np.unique(region_id_map)
+    region_ids = region_ids[region_ids != 0]
 
-        for (x, y) in cluster_coords:
-            # 检查四邻域像素，记录房间ID
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
+    # Visited mask for wall pixels to avoid double counting
+    visited_wall = np.zeros_like(wall_array, dtype=bool)
+
+    # Helper to get boundary pixels mask for a given room id
+    def get_boundary_mask(rid):
+        """Returns a boolean mask of boundary pixels for room `rid`."""
+        room_mask = (region_id_map == rid)
+        if not room_mask.any():
+            return np.zeros_like(region_id_map, dtype=bool)
+        interior = binary_erosion(room_mask, structure=structure, border_value=0)
+        boundary_mask = room_mask & ~interior
+        return boundary_mask
+
+    # Check each room's boundary for wall connectivity
+    for rid in region_ids:
+        boundary_mask = get_boundary_mask(rid)
+        boundary_coords = np.transpose(np.nonzero(boundary_mask))
+        # Iterate over each boundary pixel of room rid
+        for x, y in boundary_coords:
+            # Check four orthogonal neighbors (up, down, left, right)
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
                 nx, ny = x + dx, y + dy
-                if 0 <= nx < region_id_map.shape[0] and 0 <= ny < region_id_map.shape[1]:
-                    rid = region_id_map[nx, ny]
-                    if rid > 0:
-                        region_neighbors.add(int(rid))
+                # Skip if neighbor is out of bounds or not a wall pixel
+                if nx < 0 or nx >= region_id_map.shape[0] or ny < 0 or ny >= region_id_map.shape[1]:
+                    continue
+                if wall_array[nx, ny] != 1:
+                    continue
+                # If this wall pixel was already accounted for, skip it
+                if visited_wall[nx, ny]:
+                    continue
 
-        if len(region_neighbors) >= 2:
-            neighbor_list = sorted(region_neighbors)
-            for i in range(len(neighbor_list)):
-                for j in range(i+1, len(neighbor_list)):
-                    id1, id2 = neighbor_list[i], neighbor_list[j]
-                    pair = init_edge_entry(id1, id2)
-                    cluster_icon_vals = icon_array[cluster_mask]
-                    if 1 in cluster_icon_vals:
-                        edges[pair]['connection_types'].add('door')
-                    if 2 in cluster_icon_vals:
-                        edges[pair]['connection_types'].add('window')
-                    edges[pair]['num_door_window'] += 1
-                    edges[pair]['area_door_window'] += int(cluster_mask.sum())
-
-    # 🌟 墙体连接检测逻辑（重点升级部分）
-    labeled_walls, num_wall_clusters = label(wall_array.astype(bool), structure=np.array([[0,1,0],
-                                                                                         [1,1,1],
-                                                                                         [0,1,0]], bool))
-    H, W = region_id_map.shape
-    for cid in range(1, num_wall_clusters + 1):
-        cluster_mask = (labeled_walls == cid)
-        if not cluster_mask.any():
-            continue
-        cluster_coords = np.argwhere(cluster_mask)
-
-        # 排除与图像边界相连的墙（外墙）
-        if np.any(cluster_coords[:,0] == 0) or np.any(cluster_coords[:,0] == H-1) or \
-           np.any(cluster_coords[:,1] == 0) or np.any(cluster_coords[:,1] == W-1):
-            continue
-
-        neighbor_ids = set()
-        for (x, y) in cluster_coords:
-            for dx, dy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < H and 0 <= ny < W:
-                    rid = region_id_map[nx, ny]
-                    if rid > 0:
-                        neighbor_ids.add(int(rid))
-
-        if len(neighbor_ids) < 2:
-            continue
-
-        neighbor_list = sorted(neighbor_ids)
-        cluster_area = int(cluster_mask.sum())
-
-        for i in range(len(neighbor_list)):
-            for j in range(i+1, len(neighbor_list)):
-                id1, id2 = neighbor_list[i], neighbor_list[j]
-                # 检测两个房间是否被墙直接隔开
-                direct_contact = False
-                for (x, y) in cluster_coords:
-                    if (0 < y < W-1 and
-                        ((region_id_map[x, y-1]==id1 and region_id_map[x, y+1]==id2) or
-                         (region_id_map[x, y-1]==id2 and region_id_map[x, y+1]==id1))):
-                        direct_contact = True
+                # Neighbor is a wall pixel and not visited: start BFS path search
+                # Only consider paths fully within walls connecting room rid to another room
+                # Analyze the starting wall pixel's neighbors to enforce rules
+                neighbor_regions = set()
+                is_outer = False
+                for adx, ady in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    ax, ay = nx + adx, ny + ady
+                    if ax < 0 or ax >= region_id_map.shape[0] or ay < 0 or ay >= region_id_map.shape[1]:
+                        # Touches image boundary, considered outside
+                        is_outer = True
                         break
-                    if (0 < x < H-1 and
-                        ((region_id_map[x-1, y]==id1 and region_id_map[x+1, y]==id2) or
-                         (region_id_map[x-1, y]==id2 and region_id_map[x+1, y]==id1))):
-                        direct_contact = True
+                    if wall_array[ax, ay] == 1:
+                        # Adjacent wall pixel, ignore for region check
+                        continue
+                    rid_neighbor = region_id_map[ax, ay]
+                    if rid_neighbor == 0:
+                        # Neighbor is background (outside wall structure)
+                        is_outer = True
                         break
-                # 当只有两个房间邻接且没有严格对称像素对，也视作直接隔墙
-                if not direct_contact and len(neighbor_ids) == 2:
-                    direct_contact = True
-                if direct_contact:
-                    pair = init_edge_entry(id1, id2)
-                    edges[pair]['connection_types'].add('wall')
-                    edges[pair]['num_wall'] += 1
-                    edges[pair]['area_wall'] += cluster_area
+                    if rid_neighbor != rid:
+                        neighbor_regions.add(rid_neighbor)
+                # Skip this wall pixel if it contacts outside or more than one different room (intersection)
+                if is_outer or len(neighbor_regions) > 1:
+                    visited_wall[nx, ny] = True
+                    continue
+
+                # Initialize BFS for this wall segment
+                encountered_room = None
+                allowed_rooms = {rid}
+                # If exactly one other room neighbor found, set it as the target room
+                if len(neighbor_regions) == 1:
+                    encountered_room = neighbor_regions.pop()
+                    allowed_rooms.add(encountered_room)
+
+                dq = deque()
+                dq.append((nx, ny))
+                visited_wall[nx, ny] = True
+                wall_segment_pixels = []  # record pixels in this wall segment path
+
+                # BFS through wall pixels
+                while dq:
+                    cx, cy = dq.popleft()
+                    wall_segment_pixels.append((cx, cy))
+                    # Examine neighboring wall pixels
+                    for odx, ody in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                        wx, wy = cx + odx, cy + ody
+                        # Skip if out of bounds or not a wall
+                        if wx < 0 or wx >= region_id_map.shape[0] or wy < 0 or wy >= region_id_map.shape[1]:
+                            continue
+                        if wall_array[wx, wy] != 1 or visited_wall[wx, wy]:
+                            continue
+                        # Check this wall pixel's adjacent regions for validity
+                        nbr_regions = set()
+                        outer_flag = False
+                        for adx, ady in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                            ax, ay = wx + adx, wy + ady
+                            if ax < 0 or ax >= region_id_map.shape[0] or ay < 0 or ay >= region_id_map.shape[1]:
+                                outer_flag = True
+                                break
+                            if wall_array[ax, ay] == 1:
+                                continue  # ignore adjacent wall pixels
+                            rid_nbr = region_id_map[ax, ay]
+                            if rid_nbr == 0:
+                                outer_flag = True
+                                break
+                            if rid_nbr != rid:
+                                nbr_regions.add(rid_nbr)
+                        # If touching outside, or invalid neighbor regions, skip this wall pixel
+                        if outer_flag:
+                            continue
+                        # Remove current room id from neighbors (we only care about other rooms)
+                        nbr_regions.discard(rid)
+                        if encountered_room is None:
+                            # No target encountered yet
+                            if len(nbr_regions) == 0:
+                                # Still within walls adjacent only to room rid
+                                pass
+                            elif len(nbr_regions) == 1:
+                                # Found exactly one new room neighbor -> set as target
+                                new_room = next(iter(nbr_regions))
+                                encountered_room = new_room
+                                allowed_rooms.add(new_room)
+                            else:
+                                # More than one new room encountered (intersection) -> stop this path
+                                continue
+                        else:
+                            # Already have a target room
+                            if len(nbr_regions) == 0:
+                                # Adjacent only to rid (and wall) - continue
+                                pass
+                            elif len(nbr_regions) == 1:
+                                # Adjacent to one room
+                                other_room = next(iter(nbr_regions))
+                                if other_room != encountered_room:
+                                    # A different room appears - invalid path
+                                    continue
+                            else:
+                                # Adjacent to more than one room (invalid)
+                                continue
+                        # Enqueue this wall pixel as part of the current wall segment path
+                        dq.append((wx, wy))
+                        visited_wall[wx, wy] = True
+
+                # BFS complete for this segment
+                if encountered_room is None:
+                    # No second room found, not a valid adjacency between two rooms
+                    continue
+
+                # We found a wall connection between rid and encountered_room
+                key = ensure_edge_entry(rid, encountered_room)
+                edges[key]['connection_types'].add('wall')
+                edges[key]['num_wall'] += 1
+                # Calculate wall segment area (number of wall pixels in this path segment)
+                segment_pixel_count = len(set(wall_segment_pixels))
+                edges[key]['area_wall'] += segment_pixel_count
 
     return edges
