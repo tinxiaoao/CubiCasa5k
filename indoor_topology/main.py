@@ -5,7 +5,7 @@ import numpy as np
 from tqdm import tqdm
 from functools import partial
 
-from indoor_topology.detect_adjacency_old import detect_adjacency
+from indoor_topology.detect_adjacency_v0 import detect_adjacency
 from indoor_topology.extract_rooms import extract_rooms
 from indoor_topology.save_topology_image import save_topology_image, save_to_excel, build_topology_graph
 
