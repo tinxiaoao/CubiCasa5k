@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from indoor_topology.extract_rooms import extract_rooms
-from indoor_topology.detect_adjacency import detect_adjacency
+from indoor_topology.detect_adjacency_v1 import detect_adjacency
 from indoor_topology.save_topology_image import save_topology_image, save_to_excel, build_topology_graph
 
 

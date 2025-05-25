@@ -84,7 +84,7 @@ def detect_adjacency(region_id_map, wall_array, icon_array):
     visited_wall = np.zeros_like(wall_array, dtype=bool)
 
     # 排除类别像素ID集合（如0背景、1室外、2阳台等）
-    excluded_categories = {0, 1, 8, 50}
+    excluded_categories = {0, 1, 8,}
 
     # 遍历每个房间，检查其边界像素的墙连接
     for rid in region_ids:
