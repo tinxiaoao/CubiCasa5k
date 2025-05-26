@@ -31,7 +31,7 @@ def main():
     icon_array[icon_label_array == 2] = 2  # 窗
 
     # 检测邻接关系
-    edges = detect_adjacency(region_id_map, wall_array, icon_array)
+    edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array)
 
     # 构建拓扑图
     # topology_graph = build_topology_graph(rooms, edges)
