@@ -1,142 +1,133 @@
 import numpy as np
-from scipy.ndimage import label, binary_dilation
+from scipy import ndimage
 
 
-def detect_adjacency(region_id_map, wall_array, door_array=None, window_array=None):
+def detect_adjacency(region_id_map: np.ndarray, wall_array: np.ndarray, icon_array: np.ndarray):
     """
-    Detect adjacency between regions based on wall and door/window masks.
-    Returns a dictionary `edges` where each key is a tuple of two region IDs and
-    the value is a dict with fields:
-      - connection_types: set of connection types ('wall', 'door', 'window') between the two regions
-      - num_door_window: number of door/window connections between the regions
-      - area_door_window: total pixel area of door/window connections
-      - num_wall: number of wall segments between the regions
-      - area_wall: total pixel area of wall segments
+    根据房间区域图 (region_id_map)、墙体二值图 (wall_array) 和门窗二值图 (icon_array)，
+    检测房间之间的邻接关系，包括通过墙体连接和通过门窗（门/窗）连接。
+
+    返回值:
+        edges (dict): 邻接关系字典。
+            键为 (id1, id2) 的房间对元组（id1 < id2），
+            值为包含连接信息的字典，包括:
+                'connection_types': set，包含 'wall'、'door'、'window' 或 'door/window'（至少包含其一）表示连接类型；
+                'num_wall': int，墙体连接段数量（计数）；
+                'area_wall': int，墙体连接的像素总数；
+                'num_door_window': int，门窗连接数量（门和窗合计）；
+                'area_door_window': int，门窗连接的像素总数。
     """
     edges = {}
+    # 图像尺寸
+    H, W = region_id_map.shape
+    # 要排除的区域索引（背景、Outdoor、栏杆等），这些不计入房间邻接
+    exclude_indices = {0, 1, 8, 50}
 
-    # 1. Identify connected wall segments using scipy.ndimage.label
-    wall_labels, num_walls = label(wall_array)
-    if num_walls > 0:
-        # Pre-compute pixel area of each wall segment
-        wall_counts = np.bincount(wall_labels.ravel())
-        # Define 4-connectivity structure for neighbor detection (up, down, left, right)
-        structure = np.array([[False, True, False],
-                              [True, True, True],
-                              [False, True, False]], dtype=bool)
-        # Process each wall segment
-        for wall_id in range(1, num_walls + 1):
-            # Extract the mask for this wall segment
-            segment_mask = (wall_labels == wall_id)
-            if not segment_mask.any():
-                continue
-            # Find all neighboring pixels (4-neighborhood) around this wall segment
-            dilated_mask = binary_dilation(segment_mask, structure=structure)
-            neighbor_mask = np.logical_and(dilated_mask, ~segment_mask)
-            neighbor_vals = region_id_map[neighbor_mask]
-            if neighbor_vals.size == 0:
-                continue
-            neighbors = set(np.unique(neighbor_vals))
-            # 2. Check if the wall segment neighbors two or more different rooms
-            # (regions with id > 0, excluding background)
-            skip_segment = False
-            # 2.a. If any boundary neighbor is background or outdoor (region_id 0 or 1), skip this wall segment
-            if 0 in neighbors or 1 in neighbors:
-                skip_segment = True
-            # Remove background/outdoor from neighbor set for room count
-            neighbors.discard(0)
-            neighbors.discard(1)
-            if skip_segment:
-                # Do not include this wall segment in room connections
-                continue
-            # If the wall segment is adjacent to two or more different non-background regions
-            if len(neighbors) >= 2:
-                # Calculate area (pixel count) of this wall segment
-                segment_area = int(wall_counts[wall_id] if wall_id < len(wall_counts) else np.sum(segment_mask))
-                neighbors_list = sorted(neighbors)
-                # 2.b. Record this wall segment as a connection (edge) between each pair of adjacent regions
-                for i in range(len(neighbors_list)):
-                    for j in range(i + 1, len(neighbors_list)):
-                        r1, r2 = neighbors_list[i], neighbors_list[j]
-                        if r1 == r2:
+    # 1. 门窗连接检测逻辑（保持与 v0 版本一致）
+    # 遍历门和窗两类 icon，进行连通域分析
+    for icon_val, conn_label in [(1, 'door'), (2, 'window')]:
+        # 二值掩膜：当前类型的 icon（1=门 或 2=窗）
+        icon_mask = (icon_array == icon_val).astype(np.uint8)
+        if icon_mask.any():
+            # 连通域标记（使用8连通保证对角相连的像素属于同一连通块）
+            labeled_array, num_features = ndimage.label(icon_mask, structure=np.ones((3, 3), dtype=int))
+            for lbl in range(1, num_features + 1):
+                # 提取该连通块的所有像素坐标
+                coords = np.argwhere(labeled_array == lbl)
+                neighbor_ids = set()
+                skip_segment = False
+                # 检查该门/窗连通块周围相邻的房间区域
+                for (x, y) in coords:
+                    # 四邻接像素坐标偏移量 (上、下、左、右)
+                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nx, ny = x + dx, y + dy
+                        if nx < 0 or nx >= H or ny < 0 or ny >= W:
+                            # 与图像边界相邻，视为外部区域
+                            skip_segment = True
+                            break
+                        region_val = region_id_map[nx, ny]
+                        if region_val > 0:
+                            neighbor_ids.add(region_val)
+                        elif region_val in exclude_indices or region_val == 0:
+                            # 若邻接像素属于排除类别（背景/Outdoor等）
+                            # 进一步判断该邻接像素是否不是墙或其他门窗（即真正外部区域）
+                            if wall_array[nx, ny] == 0 and icon_array[nx, ny] == 0:
+                                skip_segment = True
+                                break
+                            # 如果邻居是墙体或另一个门窗像素，则忽略（不计为房间）
+                    if skip_segment:
+                        break
+                # 如果该门/窗段无效（相邻区域少于2，或接触外部），则跳过
+                if skip_segment or len(neighbor_ids) < 2:
+                    continue
+                # 获取相邻房间ID对（一般应正好2个）
+                neighbor_ids = sorted(neighbor_ids)
+                for i in range(len(neighbor_ids)):
+                    for j in range(i + 1, len(neighbor_ids)):
+                        id1, id2 = neighbor_ids[i], neighbor_ids[j]
+                        if id1 == id2:
                             continue
-                        edge_key = (r1, r2) if r1 < r2 else (r2, r1)
-                        if edge_key not in edges:
-                            edges[edge_key] = {
+                        pair = (id1, id2) if id1 < id2 else (id2, id1)
+                        if pair not in edges:
+                            edges[pair] = {
                                 'connection_types': set(),
-                                'num_door_window': 0,
-                                'area_door_window': 0,
                                 'num_wall': 0,
-                                'area_wall': 0
+                                'area_wall': 0,
+                                'num_door_window': 0,
+                                'area_door_window': 0
                             }
-                        edges[edge_key]['connection_types'].add('wall')
-                        edges[edge_key]['num_wall'] += 1
-                        edges[edge_key]['area_wall'] += segment_area
-
-    # 3. Door/window connection logic (unchanged)
-    if door_array is not None or window_array is not None:
-        # Combine door and window masks if both are provided
-        if door_array is not None and window_array is not None:
-            door_window_mask = np.logical_or(door_array, window_array)
-        elif door_array is not None:
-            door_window_mask = door_array.copy()
-        else:
-            door_window_mask = window_array.copy()
-        # Label connected components of door/window openings
-        opening_labels, num_openings = label(door_window_mask)
-        if num_openings > 0:
-            opening_counts = np.bincount(opening_labels.ravel())
-            structure = np.array([[False, True, False],
-                                  [True, True, True],
-                                  [False, True, False]], dtype=bool)
-            # Process each door/window opening segment
-            for open_id in range(1, num_openings + 1):
-                segment_mask = (opening_labels == open_id)
-                if not segment_mask.any():
-                    continue
-                dilated_mask = binary_dilation(segment_mask, structure=structure)
-                neighbor_mask = np.logical_and(dilated_mask, ~segment_mask)
-                neighbor_vals = region_id_map[neighbor_mask]
-                if neighbor_vals.size == 0:
-                    continue
-                neighbors = set(np.unique(neighbor_vals))
-                # Remove background (0) from neighbors for connectivity check
-                neighbors.discard(0)
-                # (We do NOT skip segments touching outdoor (1) for door/window, keeping exterior door connections)
-                if len(neighbors) >= 2:
-                    # Calculate area of this opening segment
-                    segment_area = int(
-                        opening_counts[open_id] if open_id < len(opening_counts) else np.sum(segment_mask))
-                    # Determine whether this segment is a door or window (or combined)
-                    conn_type = None
-                    if door_array is not None and np.any(np.logical_and(segment_mask, door_array)):
-                        conn_type = 'door'
-                    if window_array is not None and np.any(np.logical_and(segment_mask, window_array)):
-                        if conn_type is None:
-                            conn_type = 'window'
-                        else:
-                            # If a segment contains both door and window pixels (unlikely), treat it as 'door'
-                            conn_type = 'door'
-                    if conn_type is None:
-                        conn_type = 'door_window'
-                    neighbors_list = sorted(neighbors)
-                    # Record this opening as a connection between each pair of adjacent regions
-                    for i in range(len(neighbors_list)):
-                        for j in range(i + 1, len(neighbors_list)):
-                            r1, r2 = neighbors_list[i], neighbors_list[j]
-                            if r1 == r2:
-                                continue
-                            edge_key = (r1, r2) if r1 < r2 else (r2, r1)
-                            if edge_key not in edges:
-                                edges[edge_key] = {
-                                    'connection_types': set(),
-                                    'num_door_window': 0,
-                                    'area_door_window': 0,
-                                    'num_wall': 0,
-                                    'area_wall': 0
-                                }
-                            edges[edge_key]['connection_types'].add(conn_type)
-                            edges[edge_key]['num_door_window'] += 1
-                            edges[edge_key]['area_door_window'] += segment_area
-
+                        # 标记连接类型，累加门窗连接数量和面积
+                        edges[pair]['connection_types'].add(conn_label)
+                        edges[pair]['num_door_window'] += 1
+                        edges[pair]['area_door_window'] += coords.shape[0]
+    # 2. 墙体连接检测逻辑
+    if wall_array.any():
+        # 对墙体像素进行连通域分析（8连通，将相连墙段视为一整段）
+        labeled_walls, num_wall_components = ndimage.label(wall_array, structure=np.ones((3, 3), dtype=int))
+        for lbl in range(1, num_wall_components + 1):
+            coords = np.argwhere(labeled_walls == lbl)
+            neighbor_ids = set()
+            skip_segment = False
+            for (x, y) in coords:
+                # 检查每个墙体像素周围的房间区域像素（4连通方向）
+                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                    nx, ny = x + dx, y + dy
+                    if nx < 0 or nx >= H or ny < 0 or ny >= W:
+                        # 墙段接触图像边界，视为外墙，整段跳过
+                        skip_segment = True
+                        break
+                    region_val = region_id_map[nx, ny]
+                    if region_val > 0:
+                        neighbor_ids.add(region_val)
+                    elif region_val in exclude_indices or region_val == 0:
+                        # 墙段邻接排除区域（背景、室外、栏杆等），跳过该墙段
+                        if wall_array[nx, ny] == 0 and icon_array[nx, ny] == 0:
+                            skip_segment = True
+                            break
+                        # 邻居若是墙体或门窗，同样不计入房间集合
+                if skip_segment:
+                    break
+            # 如果该墙段接触外部或邻接房间数不足2，则跳过
+            if skip_segment or len(neighbor_ids) < 2:
+                continue
+            # 识别该墙段连接的所有房间对
+            neighbor_ids = sorted(neighbor_ids)
+            for i in range(len(neighbor_ids)):
+                for j in range(i + 1, len(neighbor_ids)):
+                    id1, id2 = neighbor_ids[i], neighbor_ids[j]
+                    if id1 == id2:
+                        continue
+                    pair = (id1, id2) if id1 < id2 else (id2, id1)
+                    if pair not in edges:
+                        edges[pair] = {
+                            'connection_types': set(),
+                            'num_wall': 0,
+                            'area_wall': 0,
+                            'num_door_window': 0,
+                            'area_door_window': 0
+                        }
+                    # 增加墙体连接信息（每段墙体连通块计为一次连接）
+                    edges[pair]['connection_types'].add('wall')
+                    edges[pair]['num_wall'] += 1
+                    edges[pair]['area_wall'] += coords.shape[0]
     return edges
