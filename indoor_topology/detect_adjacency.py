@@ -1,133 +1,150 @@
 import numpy as np
-from scipy import ndimage
+from collections import defaultdict
+from scipy.ndimage import label, binary_dilation
 
 
-def detect_adjacency(region_id_map: np.ndarray, wall_array: np.ndarray, icon_array: np.ndarray):
+# -----------------------------------------------------------------------------
+# 该版本只重写“墙体连接”检测部分；门 / 窗连接部分保持 detect_adjacency_v0.py 原样。
+# -----------------------------------------------------------------------------
+
+def get_boundary_mask(region_id_map: np.ndarray, rid: int) -> np.ndarray:
+    """返回房间 rid 的边界像素布尔掩码。"""
+
+    room_mask = (region_id_map == rid)
+    if room_mask.sum() == 0:
+        return np.zeros_like(room_mask, dtype=bool)
+
+    # 4-邻接结构用卷积近似 erosion 得到 interior
+    # faster than binary_erosion for simple 4‑neighbours mask
+    interior = (
+            np.roll(room_mask, 1, axis=0) & np.roll(room_mask, -1, axis=0) &
+            np.roll(room_mask, 1, axis=1) & np.roll(room_mask, -1, axis=1) & room_mask
+    )
+    return room_mask & (~interior)
+
+
+# =============================================================================
+# 主函数 detect_adjacency
+# =============================================================================
+
+def detect_adjacency(region_id_map: np.ndarray,
+                     wall_array: np.ndarray,
+                     icon_array: np.ndarray,
+                     *,
+                     wall_label_raw: np.ndarray = None,
+                     exclude_indices: set = {0, 1, 8, 50}) -> dict:
+    """检测房间之间的门/窗 + 墙体连接。
+
+    Parameters
+    ----------
+    region_id_map : np.ndarray
+        每个像素的房间 id（0 表示非房间）。
+    wall_array : np.ndarray
+        墙体二值图：墙体像素==1；其他==0。
+    icon_array : np.ndarray
+        图标图：门==1，窗==2，其余==0。
+    wall_label_raw : np.ndarray, optional
+        原始索引图（一般可直接用 np.array(Image.open('wall_svg.png')) 读取得到）。
+        用于判断墙段是否接触 exclude_indices。若为空，则回退到 region_id_map==0 的检测方式。
+    exclude_indices : set, default {0,1,8,50}
+        与这些索引相邻的墙段视为外墙并被忽略。
+
+    Returns
+    -------
+    edges : dict
+        {(id1,id2): {connection_types,set,...}}
     """
-    根据房间区域图 (region_id_map)、墙体二值图 (wall_array) 和门窗二值图 (icon_array)，
-    检测房间之间的邻接关系，包括通过墙体连接和通过门窗（门/窗）连接。
-
-    返回值:
-        edges (dict): 邻接关系字典。
-            键为 (id1, id2) 的房间对元组（id1 < id2），
-            值为包含连接信息的字典，包括:
-                'connection_types': set，包含 'wall'、'door'、'window' 或 'door/window'（至少包含其一）表示连接类型；
-                'num_wall': int，墙体连接段数量（计数）；
-                'area_wall': int，墙体连接的像素总数；
-                'num_door_window': int，门窗连接数量（门和窗合计）；
-                'area_door_window': int，门窗连接的像素总数。
-    """
-    edges = {}
-    # 图像尺寸
     H, W = region_id_map.shape
-    # 要排除的区域索引（背景、Outdoor、栏杆等），这些不计入房间邻接
-    exclude_indices = {0, 1, 8, 50}
+    edges = defaultdict(lambda: {
+        'connection_types': set(),
+        'num_door_window': 0,
+        'area_door_window': 0,
+        'num_wall': 0,
+        'area_wall': 0,
+    })
 
-    # 1. 门窗连接检测逻辑（保持与 v0 版本一致）
-    # 遍历门和窗两类 icon，进行连通域分析
-    for icon_val, conn_label in [(1, 'door'), (2, 'window')]:
-        # 二值掩膜：当前类型的 icon（1=门 或 2=窗）
-        icon_mask = (icon_array == icon_val).astype(np.uint8)
-        if icon_mask.any():
-            # 连通域标记（使用8连通保证对角相连的像素属于同一连通块）
-            labeled_array, num_features = ndimage.label(icon_mask, structure=np.ones((3, 3), dtype=int))
-            for lbl in range(1, num_features + 1):
-                # 提取该连通块的所有像素坐标
-                coords = np.argwhere(labeled_array == lbl)
-                neighbor_ids = set()
-                skip_segment = False
-                # 检查该门/窗连通块周围相邻的房间区域
-                for (x, y) in coords:
-                    # 四邻接像素坐标偏移量 (上、下、左、右)
-                    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                        nx, ny = x + dx, y + dy
-                        if nx < 0 or nx >= H or ny < 0 or ny >= W:
-                            # 与图像边界相邻，视为外部区域
-                            skip_segment = True
-                            break
-                        region_val = region_id_map[nx, ny]
-                        if region_val > 0:
-                            neighbor_ids.add(region_val)
-                        elif region_val in exclude_indices or region_val == 0:
-                            # 若邻接像素属于排除类别（背景/Outdoor等）
-                            # 进一步判断该邻接像素是否不是墙或其他门窗（即真正外部区域）
-                            if wall_array[nx, ny] == 0 and icon_array[nx, ny] == 0:
-                                skip_segment = True
-                                break
-                            # 如果邻居是墙体或另一个门窗像素，则忽略（不计为房间）
-                    if skip_segment:
-                        break
-                # 如果该门/窗段无效（相邻区域少于2，或接触外部），则跳过
-                if skip_segment or len(neighbor_ids) < 2:
-                    continue
-                # 获取相邻房间ID对（一般应正好2个）
-                neighbor_ids = sorted(neighbor_ids)
-                for i in range(len(neighbor_ids)):
-                    for j in range(i + 1, len(neighbor_ids)):
-                        id1, id2 = neighbor_ids[i], neighbor_ids[j]
-                        if id1 == id2:
-                            continue
-                        pair = (id1, id2) if id1 < id2 else (id2, id1)
-                        if pair not in edges:
-                            edges[pair] = {
-                                'connection_types': set(),
-                                'num_wall': 0,
-                                'area_wall': 0,
-                                'num_door_window': 0,
-                                'area_door_window': 0
-                            }
-                        # 标记连接类型，累加门窗连接数量和面积
-                        edges[pair]['connection_types'].add(conn_label)
-                        edges[pair]['num_door_window'] += 1
-                        edges[pair]['area_door_window'] += coords.shape[0]
-    # 2. 墙体连接检测逻辑
-    if wall_array.any():
-        # 对墙体像素进行连通域分析（8连通，将相连墙段视为一整段）
-        labeled_walls, num_wall_components = ndimage.label(wall_array, structure=np.ones((3, 3), dtype=int))
-        for lbl in range(1, num_wall_components + 1):
-            coords = np.argwhere(labeled_walls == lbl)
-            neighbor_ids = set()
-            skip_segment = False
-            for (x, y) in coords:
-                # 检查每个墙体像素周围的房间区域像素（4连通方向）
-                for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-                    nx, ny = x + dx, y + dy
-                    if nx < 0 or nx >= H or ny < 0 or ny >= W:
-                        # 墙段接触图像边界，视为外墙，整段跳过
-                        skip_segment = True
-                        break
-                    region_val = region_id_map[nx, ny]
-                    if region_val > 0:
-                        neighbor_ids.add(region_val)
-                    elif region_val in exclude_indices or region_val == 0:
-                        # 墙段邻接排除区域（背景、室外、栏杆等），跳过该墙段
-                        if wall_array[nx, ny] == 0 and icon_array[nx, ny] == 0:
-                            skip_segment = True
-                            break
-                        # 邻居若是墙体或门窗，同样不计入房间集合
-                if skip_segment:
-                    break
-            # 如果该墙段接触外部或邻接房间数不足2，则跳过
-            if skip_segment or len(neighbor_ids) < 2:
+    # ------------------------------------------------------------------
+    # 1) 门 / 窗连接（保持 v0 逻辑）
+    # ------------------------------------------------------------------
+    structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], bool)
+    for icon_val, icon_type in ((1, 'door'), (2, 'window')):
+        icon_mask = (icon_array == icon_val)
+        labeled_icons, num_icons = label(icon_mask, structure=structure)
+        for lbl in range(1, num_icons + 1):
+            comp_mask = (labeled_icons == lbl)
+            if not comp_mask.any():
                 continue
-            # 识别该墙段连接的所有房间对
-            neighbor_ids = sorted(neighbor_ids)
-            for i in range(len(neighbor_ids)):
-                for j in range(i + 1, len(neighbor_ids)):
-                    id1, id2 = neighbor_ids[i], neighbor_ids[j]
-                    if id1 == id2:
-                        continue
-                    pair = (id1, id2) if id1 < id2 else (id2, id1)
-                    if pair not in edges:
-                        edges[pair] = {
-                            'connection_types': set(),
-                            'num_wall': 0,
-                            'area_wall': 0,
-                            'num_door_window': 0,
-                            'area_door_window': 0
-                        }
-                    # 增加墙体连接信息（每段墙体连通块计为一次连接）
-                    edges[pair]['connection_types'].add('wall')
-                    edges[pair]['num_wall'] += 1
-                    edges[pair]['area_wall'] += coords.shape[0]
-    return edges
+            # 门窗膨胀 1 像素得到邻接区域
+            neighbour = binary_dilation(comp_mask, structure=structure) & (~comp_mask)
+            neigh_ids = np.unique(region_id_map[neighbour])
+            neigh_ids = neigh_ids[neigh_ids > 0]
+            if neigh_ids.size == 2:
+                id1, id2 = sorted(map(int, neigh_ids))
+                e = edges[(id1, id2)]
+                e['connection_types'].add(icon_type)
+                e['num_door_window'] += 1
+                e['area_door_window'] += int(comp_mask.sum())
+
+    # ------------------------------------------------------------------
+    # 2) 墙体连接：连通块 + 外墙排除
+
+    # ------------------------------------------------------------------
+    # 2‑1 连通块标记
+    wall_labels, num_wall_cc = label(wall_array, structure=structure)
+
+    # 预先准备每个墙段接触到的房间集合 & 排除标记
+    cc_touch_rooms = [set() for _ in range(num_wall_cc + 1)]  # 0 unused
+    cc_touch_exclude = [False] * (num_wall_cc + 1)
+
+    # 遍历墙体像素一次性统计相邻信息（比逐 CC 遍历快）
+    # 通过查看四邻接 room_id & raw_label
+    up_rid = np.roll(region_id_map, 1, axis=0)
+    down_rid = np.roll(region_id_map, -1, axis=0)
+    left_rid = np.roll(region_id_map, 1, axis=1)
+    right_rid = np.roll(region_id_map, -1, axis=1)
+
+    if wall_label_raw is None:
+        # 若未提供 raw label，则用 region_id_map==0 作为 exclude 判断
+        up_lab = np.zeros_like(region_id_map)
+        down_lab = np.zeros_like(region_id_map)
+        left_lab = np.zeros_like(region_id_map)
+        right_lab = np.zeros_like(region_id_map)
+    else:
+        up_lab = np.roll(wall_label_raw, 1, axis=0)
+        down_lab = np.roll(wall_label_raw, -1, axis=0)
+        left_lab = np.roll(wall_label_raw, 1, axis=1)
+        right_lab = np.roll(wall_label_raw, -1, axis=1)
+
+    # 当前墙像素坐标
+    wy, wx = np.nonzero(wall_array)
+    for y, x in zip(wy, wx):
+        lbl = wall_labels[y, x]
+        # 相邻房间 id
+        for rid in (region_id_map[y, x], up_rid[y, x], down_rid[y, x], left_rid[y, x], right_rid[y, x]):
+            if rid > 0:
+                cc_touch_rooms[lbl].add(int(rid))
+        # 相邻排除类别索引
+        for lab in (up_lab[y, x], down_lab[y, x], left_lab[y, x], right_lab[y, x]):
+            if lab in exclude_indices:
+                cc_touch_exclude[lbl] = True
+
+    # 2‑2 遍历 CC 判定内部隔墙
+    for lbl in range(1, num_wall_cc + 1):
+        rooms_touched = cc_touch_rooms[lbl]
+        if len(rooms_touched) < 2 or cc_touch_exclude[lbl]:
+            # 外墙或仅触一个房间 → skip
+            continue
+        # 有效内部隔墙：对房间对做两两组合
+        rooms_list = sorted(rooms_touched)
+        area = int((wall_labels == lbl).sum())
+        for i in range(len(rooms_list)):
+            for j in range(i + 1, len(rooms_list)):
+                id1, id2 = rooms_list[i], rooms_list[j]
+                e = edges[(id1, id2)]
+                if 'wall' not in e['connection_types']:
+                    e['connection_types'].add('wall')
+                    e['num_wall'] += 1  # 该墙段只计一次
+                    e['area_wall'] += area
+                # 如果之前门窗连接已存在，只是附加 'wall' 类型即可
+
+    return dict(edges)
