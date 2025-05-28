@@ -6,31 +6,30 @@ import networkx as nx
 
 
 def build_topology_graph(rooms, edges):
-    """
-    修复后的根据房间列表和连接关系构建NetworkX图，允许同时记录门窗和墙连接。
-    """
-    G = nx.Graph()
 
-    # 添加房间节点及属性
-    for room in rooms:
-        rid = room["id"]
-        G.add_node(rid, room_type=room["room_type"], area=room["area"])
+        G = nx.Graph()
 
-    # 添加边及属性，分别记录门窗和墙连接
-    for (id1, id2), attr in edges.items():
-        types = attr.get("connection_types", set())
+        for room in rooms:
+            G.add_node(room['id'], **room)
 
-        if {"door", "window", "door/window"} & types:
-            G.add_edge(id1, id2, connection_type="door/window",
-                       connection_count=attr["num_door_window"],
-                       connection_area=attr["area_door_window"])
+        for edge in edges:
+            id1, id2, ctype = edge['roomA'], edge['roomB'], edge['type']
+            if ctype == 'opening':
+                connection_label = "开敞空间"
+            elif ctype == 'door':
+                connection_label = "门"
+            elif ctype == 'window':
+                connection_label = "窗"
+            elif ctype == 'wall':
+                connection_label = "墙"
+            else:
+                connection_label = "其他"
 
-        if "wall" in types:
-            G.add_edge(id1, id2, connection_type="wall",
-                       connection_count=attr["num_wall"],
-                       connection_area=attr["area_wall"])
+            G.add_edge(id1, id2, connection_type=connection_label,
+                       length=edge.get('length', 0),
+                       width=edge.get('width', 0))
 
-    return G
+        return G
 
 
 def save_topology_image(region_id_map, wall_array, rooms, edges,
@@ -68,31 +67,35 @@ def save_topology_image(region_id_map, wall_array, rooms, edges,
     den = sq_max - sq_min if sq_max != sq_min else 1.0
 
     # ---------- 2. 绘制连线 ----------
-    # 修复后的绘制连线部分
-    # 最终修复后的拓扑图绘制逻辑，避免使用elif和默认黑色
-    for (id1, id2), attr in edges.items():
+    # 修正后的 edges 为列表结构
+    for edge in edges:
+        id1 = edge['roomA']
+        id2 = edge['roomB']
+        connection_type = edge['type']
+
         if id1 not in pos or id2 not in pos:
             continue
+
         x1, y1 = pos[id1]
         x2, y2 = pos[id2]
-        types = set(attr.get("connection_types", []))
 
-        # 同时存在门窗和墙连接时绘制莫兰迪粉蓝色
-        if {"door", "window", "door/window"} & types and "wall" in types:
-            color = (145, 168, 209, 255)  # 莫兰迪蓝
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
-            continue
+        # 提取同一房间对之间的所有连接类型
+        room_pair = tuple(sorted((id1, id2)))
+        types_set = set(e['type'] for e in edges if tuple(sorted((e['roomA'], e['roomB']))) == room_pair)
 
-        # 仅存在门窗连接时绘制莫兰迪粉红色
-        if {"door", "window", "door/window"} & types:
-            color = (236, 179, 184, 255)  # 莫兰迪粉红
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
-            continue
+        # 只有 'door'/'window' 或者只有 'opening' 一种类型
+        if types_set.issubset({'door', 'window'}) or types_set == {'opening'}:
+            color = (236, 179, 184, 255)  # 莫兰迪粉红色
 
-        # 仅存在墙连接时绘制莫兰迪灰色
-        if "wall" in types:
-            color = (173, 175, 170, 255)  # 莫兰迪灰
-            draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
+        # 只有 'wall' 类型
+        elif types_set == {'wall'}:
+            color = (173, 175, 170, 255)  # 莫兰迪灰色
+
+        # 混合类型：wall + (door/window/opening)
+        elif 'wall' in types_set and (types_set & {'door', 'window', 'opening'}):
+            color = (145, 168, 209, 255)  # 莫兰迪蓝色
+
+        draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
 
     # ---------- 3. 绘制节点 ----------
     try:
@@ -128,34 +131,36 @@ def save_to_excel(rooms, edges, save_path: str):
     修复后的将房间属性和连接边列表保存到Excel文件的函数。
     允许同时记录门窗连接和墙连接。
     """
-    room_type_map = {room['id']: room['room_type'] for room in rooms}
     data = []
+    room_type_map = {room['id']: room['room_type'] for room in rooms}
 
-    for (id1, id2), attr in edges.items():
-        # 分别判断和记录门窗连接
-        if attr.get("num_door_window", 0) > 0:
-            data.append({
-                "房间ID1": id1,
-                "房间类型1": room_type_map.get(id1, "Unknown"),
-                "房间ID2": id2,
-                "房间类型2": room_type_map.get(id2, "Unknown"),
-                "连接类型": "门/窗",
-                "连接数量": attr["num_door_window"],
-                "连接面积": attr["area_door_window"]
-            })
+    for edge in edges:
+        id1 = edge['roomA']
+        id2 = edge['roomB']
+        connection_type = edge['type']
 
-        # 分别判断和记录墙连接
-        if attr.get("num_wall", 0) > 0:
-            data.append({
-                "房间ID1": id1,
-                "房间类型1": room_type_map.get(id1, "Unknown"),
-                "房间ID2": id2,
-                "房间类型2": room_type_map.get(id2, "Unknown"),
-                "连接类型": "墙",
-                "连接数量": attr["num_wall"],
-                "连接面积": attr["area_wall"]
-            })
+        if connection_type == 'door':
+            ctype_cn = "门"
+        elif connection_type == 'window':
+            ctype_cn = "窗"
+        elif connection_type == 'wall':
+            ctype_cn = "墙"
+        elif connection_type == 'opening':
+            ctype_cn = "开敞空间"  # 新增的描述
+        else:
+            ctype_cn = "其他"
 
-    columns = ["房间ID1", "房间类型1", "房间ID2", "房间类型2", "连接类型", "连接数量", "连接面积"]
+        data.append({
+            "房间ID1": id1,
+            "房间类型1": room_type_map.get(id1, "Unknown"),
+            "房间ID2": id2,
+            "房间类型2": room_type_map.get(id2, "Unknown"),
+            "连接类型": ctype_cn,
+            "连接长度": edge.get("length", 0),
+            "连接宽度": edge.get("width", 0)
+        })
+
+    columns = ["房间ID1", "房间类型1", "房间ID2", "房间类型2", "连接类型", "连接长度", "连接宽度"]
     df = pd.DataFrame(data, columns=columns)
     df.to_excel(save_path, index=False)
+

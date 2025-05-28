@@ -2,7 +2,7 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from indoor_topology.extract_rooms import extract_rooms
-from indoor_topology.detect_adjacency_v2 import detect_adjacency
+from indoor_topology.detect_adjacency_v3 import detect_adjacency
 from indoor_topology.save_topology_image import save_topology_image, save_to_excel, build_topology_graph
 
 
@@ -31,7 +31,7 @@ def main():
     icon_array[icon_label_array == 2] = 2  # 窗
 
     # 检测邻接关系
-    edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array)
+    edges = detect_adjacency(region_id_map, wall_array, icon_array)
 
     # 构建拓扑图
     # topology_graph = build_topology_graph(rooms, edges)
