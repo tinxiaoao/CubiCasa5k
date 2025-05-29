@@ -59,9 +59,9 @@ def detect_adjacency(region_id_map, wall_array, icon_array):
             comp_type = None
             if comp_values.size > 0:
                 comp_class = int(comp_values[0])
-                if comp_class == 3:
+                if comp_class == 1:
                     comp_type = 'door'
-                elif comp_class == 4:
+                elif comp_class == 2:
                     comp_type = 'window'
             # 如果类型无法判断则跳过（通常不会发生）
             if comp_type is None:
