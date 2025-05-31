@@ -1,8 +1,10 @@
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+
+from indoor_topology.detect_adjacency import detect_adjacency
 from indoor_topology.extract_rooms import extract_rooms
-from indoor_topology.detect_adjacency_v3 import detect_adjacency
+
 from indoor_topology.save_topology_image import save_topology_image, save_to_excel, build_topology_graph
 
 
@@ -27,11 +29,11 @@ def main():
     icon_label_img = Image.open(icon_svg_path).convert('P')
     icon_label_array = np.array(icon_label_img)
     icon_array = np.zeros_like(icon_label_array, dtype=np.uint8)
-    icon_array[icon_label_array == 1] = 1  # 门
-    icon_array[icon_label_array == 2] = 2  # 窗
+    icon_array[icon_label_array == 1] = 2  # 门
+    icon_array[icon_label_array == 2] = 1  # 窗
 
     # 检测邻接关系
-    edges = detect_adjacency(region_id_map, wall_array, icon_array)
+    edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array)
 
     # 构建拓扑图
     # topology_graph = build_topology_graph(rooms, edges)
