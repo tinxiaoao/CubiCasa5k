@@ -120,36 +120,37 @@ def detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array):
             })
 
     # 2️⃣ 第二阶段：移除外墙，只保留内部隔墙
-        # 1. 掩码
-        wall_mask = (wall_label_array == 2)
-        excluded_labels = [0, 1, 8, 50]  # 室外 / 阳台 / 背景
-        excluded_mask = np.isin(wall_label_array, excluded_labels)
+        # ★① 先找“室外 / 阳台 / 背景”像素
+        outside = np.isin(wall_label_array, [0, 1, 8, 50]).astype(np.uint8)  # 0/1:False, True→1
+        H, W = outside.shape
 
-        # 保存纯二值图：白 = 排除区域，黑 = 其它
-        cv2.imwrite('excluded_mask.png', excluded_mask.astype(np.uint8) * 255)
+        # ★② Flood-fill：把与图像四周连通的像素全部置 1
+        mask = np.zeros((H + 2, W + 2), np.uint8)  # floodFill 需要比原图大2的 mask
+        cv2.floodFill(outside, mask, seedPoint=(0, 0), newVal=1)  # 0,0 位于图外黑边
 
-        # 2. 四邻域触碰排除区 + 图像边框
-        H, W = wall_mask.shape
-        outer_wall = np.zeros_like(wall_mask, dtype=bool)
+        outside_fill = (outside == 1)  # True ⇒ 室外连通域
 
-        # 四方向
-        outer_wall[1:, :] |= wall_mask[1:, :] & excluded_mask[:-1, :]  # 上
-        outer_wall[:-1, :] |= wall_mask[:-1, :] & excluded_mask[1:, :]  # 下
-        outer_wall[:, 1:] |= wall_mask[:, 1:] & excluded_mask[:, :-1]  # 左
-        outer_wall[:, :-1] |= wall_mask[:, :-1] & excluded_mask[:, 1:]  # 右
+        # ★③ 得到“室外连通域边缘” (可选，仅调试可视)
+        kernel = np.ones((3, 3), np.uint8)
+        outside_edge = cv2.dilate(outside_fill.astype(np.uint8), kernel, 1) & (~outside_fill)
 
-        # 边框像素本身即外墙
-        outer_wall[0, :] = outer_wall[0, :] | wall_mask[0, :]
-        outer_wall[-1, :] = outer_wall[-1, :] | wall_mask[-1, :]
-        outer_wall[:, 0] = outer_wall[:, 0] | wall_mask[:, 0]
-        outer_wall[:, -1] = outer_wall[:, -1] | wall_mask[:, -1]
+        # ★④ 初始墙体掩码
+        wall_mask = (wall_label_array == 2).astype(np.uint8)  # 1=墙, 0=其他
 
-        # 3. 剔除
-        wall_mask[outer_wall] = 0
+        # ★⑤ 与室外连通域直接接触的墙体像素
+        #    （dilate 一圈，让整段墙厚首层都被打种子）
+        candidate = (cv2.dilate(outside_fill.astype(np.uint8), kernel, 1) & wall_mask).astype(np.uint8)
 
-        # 4. 调试
-        cv2.imwrite("outer_wall_mask.png", outer_wall.astype(np.uint8) * 255)
-        cv2.imwrite("debug_internal_wall_mask.png", wall_mask.astype(np.uint8) * 255)
+        # ★⑥ floodFill 把所有与室外连通的墙体整段抹掉
+        # 先给 floodFill 提前准备 mask；floodFill 只能改“非零”种子
+        mask2 = np.zeros((H + 2, W + 2), np.uint8)
+
+        # floodFill 需要一个“种子像素”，但 candidate 里可能很多
+        # 遍历 candidate==1 的所有像素，逐个 floodFill .
+        ys, xs = np.where(candidate == 1)
+        for y, x in zip(ys, xs):
+            if wall_mask[y, x] == 1:  # 可能前面已被填 0，要判断
+                cv2.floodFill(wall_mask, mask2, seedPoint=(int(x), int(y)), newVal=0)
 
 
     # 3️⃣ 第三阶段：像素级房间对标签打标
