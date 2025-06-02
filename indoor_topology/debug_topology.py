@@ -14,9 +14,9 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 
 def main():
     # ---------- 路径 ----------
-    wall_svg_path   = "wall_svg.png"
-    icon_svg_path   = "icon_svg.png"
-    rough_img_path  = "svgImg_roughcast.png"   # 作为背景
+    wall_svg_path = "wall_svg.png"
+    icon_svg_path = "icon_svg.png"
+    rough_img_path = "svgImg_roughcast.png"  # 作为背景
     palette_img_path = "icon.png"
 
     # ---------- 加载墙体索引图 ----------

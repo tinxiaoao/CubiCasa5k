@@ -45,16 +45,18 @@ def process_sample(sample_dir: str):
     icon_path = os.path.join(sample_dir, "icon_svg.png")
     rough_path = os.path.join(sample_dir, "svgImg_roughcast.png")
 
-    wall_label_img = Image.open(wall_path).convert('P'); wall_label_img.putpalette(palette_img.getpalette())
+    wall_label_img = Image.open(wall_path).convert('P')
+    wall_label_img.putpalette(palette_img.getpalette())
     wall_label_array = np.array(wall_label_img)
 
-    icon_label_img = Image.open(icon_path).convert('P'); icon_label_img.putpalette(palette_img.getpalette())
+    icon_label_img = Image.open(icon_path).convert('P')
+    icon_label_img.putpalette(palette_img.getpalette())
     icon_label_array = np.array(icon_label_img)
 
     wall_array = (wall_label_array == 2).astype(np.uint8)
     icon_array = np.zeros_like(icon_label_array, dtype=np.uint8)
-    icon_array[icon_label_array == 1] = 1
-    icon_array[icon_label_array == 2] = 2
+    icon_array[icon_label_array == 1] = 2
+    icon_array[icon_label_array == 2] = 1
 
     region_id_map, rooms, min_len = extract_rooms(wall_label_array)
     edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array, min_len)

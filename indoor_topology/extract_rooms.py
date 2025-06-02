@@ -1,6 +1,7 @@
 import numpy as np
 import cv2
 
+
 def extract_rooms(wall_array: np.ndarray):
     """
     输入:
@@ -13,7 +14,7 @@ def extract_rooms(wall_array: np.ndarray):
     # ------------------------------------------------------------------
     # 1️⃣ 生成房间掩膜
     # ------------------------------------------------------------------
-    exclude_indices = {0, 1, 2, 8, 50}        # 室外/墙/背景/透明
+    exclude_indices = {0, 1, 2, 8, 50}  # 室外/墙/背景/透明
     mask = (~np.isin(wall_array, list(exclude_indices))).astype(np.uint8)  # 房间=1
 
     # ------------------------------------------------------------------
@@ -48,8 +49,8 @@ def extract_rooms(wall_array: np.ndarray):
         # --- 周长 -> 平均边长 ---
         boundary = cv2.morphologyEx(region_mask.astype(np.uint8),
                                     cv2.MORPH_GRADIENT, kernel)
-        perimeter = int(boundary.sum())         # 像素级周长
-        avg_len = perimeter / 4.0               # 平均边长估算
+        perimeter = int(boundary.sum())  # 像素级周长
+        avg_len = perimeter / 10  # 平均边长估算 设为4的话，在房间较大的平面图中容易出现误判，
         min_avg_room_length = min(min_avg_room_length, avg_len)
 
         rooms.append({
