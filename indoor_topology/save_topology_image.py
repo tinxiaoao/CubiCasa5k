@@ -75,6 +75,11 @@ def save_topology_image(region_id_map: np.ndarray,
         rough_img_path: 背景 PNG (svgImg_roughcast.png 渲染版)
         save_path     : 输出 PNG
     """
+    # --- 1. 保护性检查 ---------------------------------
+    if len(rooms) == 0:
+        print(f"[WARN] {rough_img_path}: 无房间，跳过保存拓扑图")
+        return  # 或者记录日志后 return
+
     # 读取背景
     bg = cv2.imread(rough_img_path, cv2.IMREAD_UNCHANGED)
     if bg is None:
