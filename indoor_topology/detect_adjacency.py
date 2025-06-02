@@ -30,7 +30,7 @@ _BLOCKED_CODES: Set[int] = {0, 1, 8, 50}  # 调色板索引中：室外/阻断�
 def _get_boundary_pixels(region_map: np.ndarray, room_id: int) -> List[Tuple[int, int]]:
     """返回 room_id 在 region_map 中的所有边界像素坐标列表。"""
     H, W = region_map.shape
-    coords = np.argwhere(region_map == room_id)
+    coords = np.argwhere(region_map == room_id) # 获取房间所有像素坐标数组 (N,2)
     boundary = []
     for x, y in coords:
         for dx, dy in _DIRECTIONS:
