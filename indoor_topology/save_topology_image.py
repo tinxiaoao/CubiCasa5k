@@ -1,166 +1,179 @@
+import os
+import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-import math
-import networkx as nx
+from collections import defaultdict
+from typing import List, Dict, Tuple
+import cv2
+
+__all__ = [
+    "build_topology_graph",
+    "save_topology_image",
+    "save_to_excel",
+]
 
 
-def build_topology_graph(rooms, edges):
+# --------------------------------------------------------------------------------------
+# 1️⃣ 构图：将 edges 与 rooms 转为 NetworkX 图（仅供需要时使用，可不导入 networkx）
+# --------------------------------------------------------------------------------------
 
-        G = nx.Graph()
+def build_topology_graph(rooms: List[Dict], edges: List[Dict]):
+    try:
+        import networkx as nx
+    except ImportError:
+        raise ImportError("build_topology_graph 依赖 networkx，请先 pip install networkx")
 
-        for room in rooms:
-            G.add_node(room['id'], **room)
+    G = nx.Graph()
+    for r in rooms:
+        G.add_node(r["id"], area=r["area"], room_type=r.get("room_type", ""))
 
-        for edge in edges:
-            id1, id2, ctype = edge['roomA'], edge['roomB'], edge['type']
-            if ctype == 'opening':
-                connection_label = "开敞空间"
-            elif ctype == 'door':
-                connection_label = "门"
-            elif ctype == 'window':
-                connection_label = "窗"
-            elif ctype == 'wall':
-                connection_label = "墙"
-            else:
-                connection_label = "其他"
+    type_map = {"door": "门", "window": "窗", "wall": "墙", "opening": "开敞"}
+    pair2types = defaultdict(set)
+    for e in edges:
+        pair = tuple(sorted((e["roomA"], e["roomB"])))
+        pair2types[pair].add(type_map.get(e["type"], e["type"]))
 
-            G.add_edge(id1, id2, connection_type=connection_label,
-                       length=edge.get('length', 0),
-                       width=edge.get('width', 0))
-
-        return G
+    for (a, b), tset in pair2types.items():
+        G.add_edge(a, b, types="|".join(sorted(tset)))
+    return G
 
 
-def save_topology_image(region_id_map, wall_array, rooms, edges,
-                        save_path, rough_image, palette_img, wall_label_img,
-                        r_min=6, r_max=30, font_path=None):
-    """
-    在 rough_image 上绘制房间拓扑：
-        1) 节点大小按房间面积自适应，限制在 [r_min, r_max] 像素；
-        2) 节点颜色取自 wall_label_img 的 palette 索引；
-        3) 边颜色：门/窗绿，墙灰，其余蓝。
-    依赖全局变量：palette_img, wall_label_img
-    """
+# --------------------------------------------------------------------------------------
+# 2️⃣ 保存拓扑图 (PNG) —— 使用 roughcast PNG 作为背景；节点放置在房间质心
+# --------------------------------------------------------------------------------------
 
-    palette = palette_img.getpalette()
-    img = rough_image.copy().convert("RGBA")
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    # ---------- 1. 计算质心 & 面积 ----------
-    pos, areas, sqrt_areas = {}, {}, []
-    for room in rooms:
-        rid = room["id"]
+def _compute_room_centroids(region_id_map: np.ndarray) -> Dict[int, Tuple[float, float]]:
+    """返回房间ID → (y,x) 质心坐标 (以原图像坐标)"""
+    centroids = {}
+    ids = np.unique(region_id_map)
+    ids = ids[ids > 0]
+    for rid in ids:
         ys, xs = np.where(region_id_map == rid)
-        if len(xs) == 0:
+        if ys.size == 0:
             continue
-        cx, cy = int(xs.mean()), int(ys.mean())
-        pos[rid] = (cx, cy)
-        areas[rid] = len(xs)
-        sqrt_areas.append(math.sqrt(len(xs)))
+        cy = ys.mean()
+        cx = xs.mean()
+        centroids[int(rid)] = (float(cy), float(cx))
+    return centroids
 
-    if not sqrt_areas:
-        print("未找到房间，跳过绘制")
-        return
 
-    sq_min, sq_max = min(sqrt_areas), max(sqrt_areas)
-    den = sq_max - sq_min if sq_max != sq_min else 1.0
+def save_topology_image(region_id_map: np.ndarray,
+                        rooms: List[Dict],
+                        edges: List[Dict],
+                        rough_img_path: str,
+                        save_path: str,
+                        font_path: str = None):
+    """
+    在 roughcast 背景图上绘制拓扑：
+        • 每个节点绘制在房间质心位置
+        • 边颜色: 门红 / 窗蓝 / 开敞绿 / 仅墙灰
+        • 节点大小与房间面积 √ 成正比
+    参数:
+        region_id_map : (H,W) 房间ID矩阵
+        rooms         : List[Dict] (需含 id, area)
+        edges         : List[Dict]
+        rough_img_path: 背景 PNG (svgImg_roughcast.png 渲染版)
+        save_path     : 输出 PNG
+    """
+    # 读取背景
+    bg = cv2.imread(rough_img_path, cv2.IMREAD_UNCHANGED)
+    if bg is None:
+        raise FileNotFoundError(rough_img_path)
+    # 转 RGB
+    if bg.shape[2] == 4:
+        bg_rgba = cv2.cvtColor(bg, cv2.COLOR_BGRA2RGBA)
+    else:
+        bg_rgba = cv2.cvtColor(bg, cv2.COLOR_BGR2RGB)
+    H, W = bg_rgba.shape[:2]
 
-    # ---------- 2. 绘制连线 ----------
-    # 修正后的 edges 为列表结构
-    for edge in edges:
-        id1 = edge['roomA']
-        id2 = edge['roomB']
-        connection_type = edge['type']
+    # 计算质心
+    centroids = _compute_room_centroids(region_id_map)
 
-        if id1 not in pos or id2 not in pos:
+    # 正常化面积到半径
+    areas = np.array([r["area"] for r in rooms])
+    r_min, r_max = 6, 25
+    radii = r_min + (np.sqrt(areas) - np.sqrt(areas).min()) / (np.sqrt(areas).ptp() + 1e-6) * (r_max - r_min)
+    id2radius = {r["id"]: float(rad) for r, rad in zip(rooms, radii)}
+
+    # 创建 RGBA 画布并叠加背景
+    canvas = Image.fromarray(bg_rgba)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    # 先画边 (在节点下层)
+    """颜色规则:
+        1. 仅墙  -> 灰  (#888888)
+        2. 同时包含墙 + (门/窗) -> 蓝 (#1f77b4)
+        3. 其他(只有门/窗/开敞) -> 绿 (#2ca02c)  (保持原有门/窗/开敞混合情况)
+    """
+    pair2types = defaultdict(set)
+    for e in edges:
+        pair = tuple(sorted((e["roomA"], e["roomB"])))
+        pair2types[pair].add(e["type"])
+
+    for (a, b), tset in pair2types.items():
+        if a not in centroids or b not in centroids:
             continue
+        y1, x1 = centroids[a]
+        y2, x2 = centroids[b]
 
-        x1, y1 = pos[id1]
-        x2, y2 = pos[id2]
+        # 颜色判断
+        has_wall = "wall" in tset
+        has_doorwin = any(t in tset for t in ("door", "window"))
+        if has_wall and has_doorwin:
+            color = (31, 119, 180, 255)  # 蓝: 墙 + 门/窗
+        elif has_wall:
+            color = (136, 136, 136, 255)  # 仅墙: 灰
+        else:
+            color = (44, 160, 44, 255)  # 其他: 绿 (开敞或纯门窗)
+        draw.line((x1, y1, x2, y2), fill=color, width=3)
 
-        # 提取同一房间对之间的所有连接类型
-        room_pair = tuple(sorted((id1, id2)))
-        types_set = set(e['type'] for e in edges if tuple(sorted((e['roomA'], e['roomB']))) == room_pair)
-
-        # 只有 'door'/'window' 或者只有 'opening' 一种类型
-        if types_set.issubset({'door', 'window'}) or types_set == {'opening'}:
-            color = (236, 179, 184, 255)  # 莫兰迪粉红色
-
-        # 只有 'wall' 类型
-        elif types_set == {'wall'}:
-            color = (173, 175, 170, 255)  # 莫兰迪灰色
-
-        # 混合类型：wall + (door/window/opening)
-        elif 'wall' in types_set and (types_set & {'door', 'window', 'opening'}):
-            color = (145, 168, 209, 255)  # 莫兰迪蓝色
-
-        draw.line([(x1, y1), (x2, y2)], fill=color, width=3)
-
-    # ---------- 3. 绘制节点 ----------
+    # 绘制节点
     try:
         font = ImageFont.truetype(font_path or "arial.ttf", 14)
-    except Exception:
+    except IOError:
         font = ImageFont.load_default()
 
-    for rid, (cx, cy) in pos.items():
-        # 半径映射
-        r = int(r_min + (math.sqrt(areas[rid]) - sq_min) / den * (r_max - r_min))
-        r = max(r_min, min(r, r_max * 2))
+    for r in rooms:
+        rid = r["id"]
+        if rid not in centroids:
+            continue
+        cy, cx = centroids[rid]
+        rad = id2radius[rid]
+        cx, cy, rad = float(cx), float(cy), float(rad)
+        draw.ellipse((cx - rad, cy - rad, cx + rad, cy + rad), fill=(173, 216, 230, 200), outline=(0, 0, 0, 255),
+                     width=2)
+        txt = str(rid)
+        tw, th = draw.textsize(txt, font=font)
+        draw.text((cx - tw / 2, cy - th / 2), txt, fill=(0, 0, 0, 255), font=font)
 
-        # palette 取色
-        idx = wall_label_img.getpixel((cx, cy))
-        rgb = tuple(palette[idx * 3: idx * 3 + 3])
-        fill_rgba = (*rgb, 255)
-
-        # 画圆 + 黑描边
-        bbox = [cx - r, cy - r, cx + r, cy + r]
-        draw.ellipse(bbox, fill=fill_rgba, outline=(0, 0, 0, 255), width=2)
-
-        # 文字颜色：亮底用黑，暗底用白
-        bright = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-        txt_col = (0, 0, 0) if bright > 128 else (255, 255, 255)
-        draw.text((cx, cy), str(rid), fill=txt_col, font=font, anchor="mm")
-
-    # ---------- 4. 保存 ----------
-    img.save(save_path)
+    canvas.save(save_path)
 
 
-def save_to_excel(rooms, edges, save_path: str):
+# --------------------------------------------------------------------------------------
+# 3️⃣  保存拓扑 Excel (单 sheet)
+# --------------------------------------------------------------------------------------
+
+def save_to_excel(edges: List[Dict], rooms: List[Dict], save_path: str):
+    """将 edges 与房间信息写入单一 sheet Excel。
+    列顺序: 房间1 | 类型1 | 面积1 | 房间2 | 类型2 | 面积2 | 连接类型 | 数量 | length | width
     """
-    修复后的将房间属性和连接边列表保存到Excel文件的函数。
-    允许同时记录门窗连接和墙连接。
-    """
-    data = []
-    room_type_map = {room['id']: room['room_type'] for room in rooms}
+    room_area = {r["id"]: r["area"] for r in rooms}
+    room_type = {r["id"]: r.get("room_type", "") for r in rooms}
+    type_zh = {"door": "门", "window": "窗", "wall": "墙", "opening": "开敞"}
 
-    for edge in edges:
-        id1 = edge['roomA']
-        id2 = edge['roomB']
-        connection_type = edge['type']
-
-        if connection_type == 'door':
-            ctype_cn = "门"
-        elif connection_type == 'window':
-            ctype_cn = "窗"
-        elif connection_type == 'wall':
-            ctype_cn = "墙"
-        elif connection_type == 'opening':
-            ctype_cn = "开敞空间"  # 新增的描述
-        else:
-            ctype_cn = "其他"
-
-        data.append({
-            "房间ID1": id1,
-            "房间类型1": room_type_map.get(id1, "Unknown"),
-            "房间ID2": id2,
-            "房间类型2": room_type_map.get(id2, "Unknown"),
-            "连接类型": ctype_cn,
-            "连接长度": edge.get("length", 0),
-            "连接宽度": edge.get("width", 0)
+    rows = []
+    for e in edges:
+        rows.append({
+            "房间1": e["roomA"],
+            "类型1": room_type.get(e["roomA"], ""),
+            "面积1": room_area.get(e["roomA"], ""),
+            "房间2": e["roomB"],
+            "类型2": room_type.get(e["roomB"], ""),
+            "面积2": room_area.get(e["roomB"], ""),
+            "连接类型": type_zh.get(e["type"], e["type"]),
+            "数量": e.get("num", 1),
+            "length": e["length"],
+            "width": e["width"],
         })
 
-    columns = ["房间ID1", "房间类型1", "房间ID2", "房间类型2", "连接类型", "连接长度", "连接宽度"]
-    df = pd.DataFrame(data, columns=columns)
-    df.to_excel(save_path, index=False)
-
+    pd.DataFrame(rows).to_excel(save_path, index=False)
