@@ -160,9 +160,10 @@ def save_topology_image(region_id_map: np.ndarray,
 
 def save_to_excel(edges: List[Dict], rooms: List[Dict], save_path: str):
     """将 edges 与房间信息写入单一 sheet Excel。
-    列顺序: 房间1 | 类型1 | 面积1 | 房间2 | 类型2 | 面积2 | 连接类型 | 数量 | length | width
+    列顺序: 房间1 | 类型1 | 面积1 | |周长1 | 房间2 | 类型2 | 面积2 | 周长2 | 连接类型 | 数量 | length | width
     """
     room_area = {r["id"]: r["area"] for r in rooms}
+    room_perimeter = {r["id"]: r["perimeter"] for r in rooms}
     room_type = {r["id"]: r.get("room_type", "") for r in rooms}
     type_zh = {"door": "门", "window": "窗", "wall": "墙", "opening": "开敞"}
 
@@ -172,9 +173,11 @@ def save_to_excel(edges: List[Dict], rooms: List[Dict], save_path: str):
             "房间1": e["roomA"],
             "类型1": room_type.get(e["roomA"], ""),
             "面积1": room_area.get(e["roomA"], ""),
+            "周长1": room_perimeter.get(e["roomA"], ""),
             "房间2": e["roomB"],
             "类型2": room_type.get(e["roomB"], ""),
             "面积2": room_area.get(e["roomB"], ""),
+            "周长2": room_perimeter.get(e["roomB"], ""),
             "连接类型": type_zh.get(e["type"], e["type"]),
             "数量": e.get("num", 1),
             "length": e["length"],

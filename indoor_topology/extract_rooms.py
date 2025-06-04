@@ -56,6 +56,7 @@ def extract_rooms(wall_array: np.ndarray):
         rooms.append({
             "id": rid,
             "area": area,
+            "perimeter": perimeter,
             "room_type": room_type
         })
 
