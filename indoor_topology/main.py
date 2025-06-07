@@ -6,8 +6,9 @@ from tqdm import tqdm
 from functools import partial
 
 from indoor_topology.detect_adjacency import detect_adjacency
+from indoor_topology.exterior_wall import exterior_wall_pixels
 from indoor_topology.extract_rooms import extract_rooms
-from indoor_topology.save_topology_image import save_topology_image, save_to_excel
+from indoor_topology.save_topology_image import save_topology_image, save_to_excel, save_rooms_excel
 
 # 数据根目录和文件
 ORIGIN_ROOT = r"E:\code\floor_data\cubicasa5k"
@@ -27,8 +28,10 @@ EXCLUDE = [p.strip("/").lower() for p in EXCLUDE]
 OUT_ROOT = r"E:\code\CubiCasa5k\output"
 TOP_DIR = os.path.join(OUT_ROOT, "topology")
 XLSX_DIR = os.path.join(OUT_ROOT, "topology_excel")
+ROOMSELF_DIR = os.path.join(OUT_ROOT, "roomself_excel")
 os.makedirs(TOP_DIR, exist_ok=True)
 os.makedirs(XLSX_DIR, exist_ok=True)
+os.makedirs(ROOMSELF_DIR, exist_ok=True)
 
 # -------- 调色板统一 --------
 ICON_PAL = r"E:\code\CubiCasa5k\icon.png"
@@ -58,14 +61,19 @@ def process_sample(sample_dir: str):
     icon_array[icon_label_array == 1] = 2
     icon_array[icon_label_array == 2] = 1
 
-    region_id_map, rooms, min_len = extract_rooms(wall_label_array)
+    region_id_map, rooms, min_len, wall_outside_width = extract_rooms(wall_label_array)
     edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array, min_len)
+    room_ext_stats = exterior_wall_pixels(region_id_map,
+                                          wall_label_array,
+                                          wall_outside_width)  # wall_outside_width 来自 extract_rooms
 
     # 保存
     name = os.path.basename(os.path.normpath(sample_dir))
     save_topology_image(region_id_map, rooms, edges, rough_path,
                         os.path.join(TOP_DIR, f"{name}.png"))
-    save_to_excel(edges, rooms, os.path.join(XLSX_DIR, f"{name}.xlsx"))
+    save_to_excel(edges, os.path.join(XLSX_DIR, f"{name}.xlsx"))
+    save_rooms_excel(rooms, room_ext_stats,
+                     os.path.join(ROOMSELF_DIR, f"{name}.xlsx"))
     return True
 
 
@@ -80,4 +88,4 @@ if __name__ == "__main__":
     cpu_cnt = max(mp.cpu_count() - 2, 1)
     with mp.Pool(cpu_cnt) as pool:
         list(tqdm(pool.imap(worker, samples), total=len(samples)))
-    print("处理完成样本数:", len(samples))
+    print("Finished, Total samples:", len(samples))

@@ -32,6 +32,7 @@ def extract_rooms(wall_array: np.ndarray):
     }
     rooms = []
     min_avg_room_length = float("inf")
+    wall_outside_width = float("inf")
     kernel = np.ones((3, 3), np.uint8)
 
     for rid in range(1, num_labels):
@@ -52,6 +53,7 @@ def extract_rooms(wall_array: np.ndarray):
         perimeter = int(boundary.sum())  # 像素级周长
         avg_len = perimeter / 10  # 平均边长估算 设为4的话，在房间较大的平面图中容易出现误判，
         min_avg_room_length = min(min_avg_room_length, avg_len)
+        wall_outside_width = perimeter / 4
 
         rooms.append({
             "id": rid,
@@ -63,5 +65,6 @@ def extract_rooms(wall_array: np.ndarray):
     # 若无房间, 置 0
     if min_avg_room_length == float("inf"):
         min_avg_room_length = 0.0
+        wall_outside_width = 0.0
 
-    return region_id_map.astype(np.int32), rooms, float(min_avg_room_length)
+    return region_id_map.astype(np.int32), rooms, float(min_avg_room_length), float(wall_outside_width)

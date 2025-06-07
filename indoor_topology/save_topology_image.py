@@ -158,30 +158,38 @@ def save_topology_image(region_id_map: np.ndarray,
 # 3️⃣  保存拓扑 Excel (单 sheet)
 # --------------------------------------------------------------------------------------
 
-def save_to_excel(edges: List[Dict], rooms: List[Dict], save_path: str):
-    """将 edges 与房间信息写入单一 sheet Excel。
-    列顺序: 房间1 | 类型1 | 面积1 | |周长1 | 房间2 | 类型2 | 面积2 | 周长2 | 连接类型 | 数量 | length | width
-    """
-    room_area = {r["id"]: r["area"] for r in rooms}
-    room_perimeter = {r["id"]: r["perimeter"] for r in rooms}
-    room_type = {r["id"]: r.get("room_type", "") for r in rooms}
-    type_zh = {"door": "门", "window": "窗", "wall": "墙", "opening": "开敞"}
-
-    rows = []
-    for e in edges:
-        rows.append({
-            "房间1": e["roomA"],
-            "类型1": room_type.get(e["roomA"], ""),
-            "面积1": room_area.get(e["roomA"], ""),
-            "周长1": room_perimeter.get(e["roomA"], ""),
-            "房间2": e["roomB"],
-            "类型2": room_type.get(e["roomB"], ""),
-            "面积2": room_area.get(e["roomB"], ""),
-            "周长2": room_perimeter.get(e["roomB"], ""),
-            "连接类型": type_zh.get(e["type"], e["type"]),
-            "数量": e.get("num", 1),
-            "length": e["length"],
-            "width": e["width"],
-        })
-
+def save_to_excel(edges: List[Dict], save_path: str):
+    """列: 房间1 | 房间2 | 连接类型 | 数量 | length | width"""
+    en = {"door": "Door", "window": "Window", "wall": "Wall", "opening": "Opening"}
+    rows = [{
+        "RoomA": e["roomA"],
+        "RoomB": e["roomB"],
+        "ConnectionType": en.get(e["type"], e["type"]),
+        "Count": e.get("num", 1),
+        "Length": e["length"],
+        "Width": e["width"],
+    } for e in edges]
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     pd.DataFrame(rows).to_excel(save_path, index=False)
+
+
+# --------------------------------------------------------------------------------------
+# 4️⃣ 房间属性表
+# --------------------------------------------------------------------------------------
+
+def save_rooms_excel(rooms: List[Dict], ext_stats: Dict[int, Tuple[int, int]], out_path: str):
+    """列: 房间ID | 类型 | 面积 | 周长 | 外墙 length | 外墙 width"""
+    rows = []
+    for r in rooms:
+        rid = r["id"]
+        l, w = ext_stats.get(rid, (0, 0))
+        rows.append({
+            "RoomID": rid,
+            "Type": r.get("room_type", ""),
+            "Area": r["area"],
+            "Perimeter": r["perimeter"],
+            "ExtWallLength": l,
+            "ExtWallWidth": w,
+        })
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    pd.DataFrame(rows).to_excel(out_path, index=False)
