@@ -11,60 +11,55 @@ def extract_rooms(wall_array: np.ndarray):
         rooms                    : List[Dict] [{'id', 'area', 'room_type'}]
         min_avg_room_length (float) : 所有房间中最小的“平均边长”(perimeter/4)
     """
-    # ------------------------------------------------------------------
-    # 1️⃣ 生成房间掩膜
-    # ------------------------------------------------------------------
     exclude_indices = {0, 1, 2, 8, 50}  # 室外/墙/背景/透明
-    mask = (~np.isin(wall_array, list(exclude_indices))).astype(np.uint8)  # 房间=1
+    unique_room_indices = np.unique(wall_array)
+    room_indices = [idx for idx in unique_room_indices if idx not in exclude_indices]
 
-    # ------------------------------------------------------------------
-    # 2️⃣ 连通域标记 (8-连通) → 得到 region_id_map
-    # ------------------------------------------------------------------
-    num_labels, region_id_map = cv2.connectedComponents(mask, connectivity=8)
-    # num_labels 含背景0; 房间ID范围 1..num_labels-1
+    region_id_map = np.zeros_like(wall_array, dtype=np.int32)
+    current_label = 1
 
-    # ------------------------------------------------------------------
-    # 3️⃣ 遍历房间, 计算 area, room_type, perimeter, 更新 min_avg_len
-    # ------------------------------------------------------------------
-    category_to_room = {
-        3: "Kitchen", 4: "Living Room", 5: "Bedroom",
-        6: "Bath", 7: "Hallway", 9: "Storage", 10: "Garage",
-    }
     rooms = []
     min_avg_room_length = float("inf")
     wall_outside_width = float("inf")
     kernel = np.ones((3, 3), np.uint8)
 
-    for rid in range(1, num_labels):
-        region_mask = (region_id_map == rid)
-        if not region_mask.any():
-            continue
-        area = int(region_mask.sum())
+    category_to_room = {
+        3: "Kitchen", 4: "Living Room", 5: "Bedroom",
+        6: "Bath", 7: "Hallway", 9: "Storage", 10: "Garage",
+    }
 
-        # --- 房间类别判定（与旧版保持一致） ---
-        vals, counts = np.unique(wall_array[region_mask], return_counts=True)
-        filtered = [(v, c) for v, c in zip(vals, counts) if v not in exclude_indices]
-        main_category = max(filtered, key=lambda x: x[1])[0] if filtered else None
-        room_type = category_to_room.get(main_category, "Other")
+    # 修改连通域分析逻辑
+    for room_idx in room_indices:
+        mask = (wall_array == room_idx).astype(np.uint8)
+        num_labels, labels = cv2.connectedComponents(mask, connectivity=8)
 
-        # --- 周长 -> 平均边长 ---
-        boundary = cv2.morphologyEx(region_mask.astype(np.uint8),
-                                    cv2.MORPH_GRADIENT, kernel)
-        perimeter = int(boundary.sum())  # 像素级周长
-        avg_len = perimeter / 10  # 平均边长估算 设为4的话，在房间较大的平面图中容易出现误判，
-        min_avg_room_length = min(min_avg_room_length, avg_len)
-        wall_outside_width = perimeter / 4
+        for lbl in range(1, num_labels):
+            region_mask = (labels == lbl)
+            area = int(region_mask.sum())
 
-        rooms.append({
-            "id": rid,
-            "area": area,
-            "perimeter": perimeter,
-            "room_type": room_type
-        })
+            vals, counts = np.unique(wall_array[region_mask], return_counts=True)
+            filtered = [(v, c) for v, c in zip(vals, counts) if v not in exclude_indices]
+            main_category = max(filtered, key=lambda x: x[1])[0] if filtered else None
+            room_type = category_to_room.get(main_category, "Other")
 
-    # 若无房间, 置 0
+            boundary = cv2.morphologyEx(region_mask.astype(np.uint8), cv2.MORPH_GRADIENT, kernel)
+            perimeter = int(boundary.sum())
+            avg_len = perimeter / 10
+            min_avg_room_length = min(min_avg_room_length, avg_len)
+            wall_outside_width = perimeter / 10
+
+            rooms.append({
+                "id": current_label,
+                "area": area,
+                "perimeter": perimeter,
+                "room_type": room_type
+            })
+
+            region_id_map[region_mask] = current_label
+            current_label += 1
+
     if min_avg_room_length == float("inf"):
         min_avg_room_length = 0.0
         wall_outside_width = 0.0
 
-    return region_id_map.astype(np.int32), rooms, float(min_avg_room_length), float(wall_outside_width)
+    return region_id_map, rooms, float(min_avg_room_length), float(wall_outside_width)

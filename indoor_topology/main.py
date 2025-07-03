@@ -37,7 +37,7 @@ os.makedirs(ROOMSELF_DIR, exist_ok=True)
 ICON_PAL = r"E:\code\CubiCasa5k\icon.png"
 palette_img = Image.open(ICON_PAL).convert('P')
 pal = palette_img.getpalette()
-# 调整示例色板 (可选)
+# 调整示例色板 (可选)3
 pal[50 * 3:50 * 3 + 3] = [255, 255, 255]
 pal[35 * 3:35 * 3 + 3] = [160, 160, 160]
 palette_img.putpalette(pal)
