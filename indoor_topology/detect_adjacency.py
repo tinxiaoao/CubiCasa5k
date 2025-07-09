@@ -11,7 +11,7 @@ detect_adjacency.py  ‑ 统一室内拓扑提取模块
     3. 无墙开敞 (opening)
 
 新特性:
-    • 限制墙体射线最大穿透长度 = `min_avg_len` (所有房间最小平均边长)。
+    • 限制墙体射线最大穿透长度 = min_avg_len (所有房间最小平均边长)。
     • 射线方向采用 4‑邻域 (N/E/S/W) 减少沿墙滑行误连。
 
 调用示例:
@@ -104,7 +104,7 @@ def _shoot_ray(region_map: np.ndarray,
 def _wall_edges(region_map: np.ndarray,
                 palette_map: np.ndarray,
                 max_wall_thickness: float) -> List[Dict]:
-    """遍历房间 → 边界像素 → 射线 , 收集墙体隔墙"""
+    """遍历房间 → 边界像素 → 射线 , 收集墙体隔墙，逐段计算长度和厚度"""
     edge_map: Dict[Tuple[int, int], Set[Tuple[int, int]]] = {}
     for rid in [i for i in np.unique(region_map) if i > 0]:
         for (x, y) in _get_boundary_pixels(region_map, rid):
@@ -124,27 +124,42 @@ def _wall_edges(region_map: np.ndarray,
                 key = (rid, tgt) if rid < tgt else (tgt, rid)
                 edge_map.setdefault(key, set()).update(wall_px)
 
-    # 生成 edge 字典
     edges: List[Dict] = []
+
+    # 新逻辑: 墙体像素区域局部连通域分析并逐段计算长度和厚度
     for (a, b), px in edge_map.items():
-        coords = np.array(list(px))
-        min_r, min_c = coords.min(axis=0)
-        max_r, max_c = coords.max(axis=0)
-        height = max_r - min_r + 1
-        width = max_c - min_c + 1
-        edges.append({
-            "roomA": int(a),
-            "roomB": int(b),
-            "type": "wall",
-            "length": int(max(height, width)),
-            "width": int(min(height, width))
-        })
+        wall_mask = np.zeros(region_map.shape, dtype=np.uint8)
+        for p in px:
+            wall_mask[p] = 1
+
+        # 局部连通域分析
+        num_labels, labels_im = cv2.connectedComponents(wall_mask, connectivity=4)
+
+        for lbl in range(1, num_labels):
+            coords = np.argwhere(labels_im == lbl)
+            min_r, min_c = coords.min(axis=0)
+            max_r, max_c = coords.max(axis=0)
+
+            height = max_r - min_r + 1
+            width = max_c - min_c + 1
+
+            # ----------- 几何法厚度计算 -----------
+            area = len(coords)                    # 墙段像素总数
+            length_px = max(height, width)        # 墙段长度
+            thickness_value = int(round(area / length_px))
+            thickness_value = max(thickness_value, 1)  # 最小1像素
+            thickness_value = min(thickness_value, min(height, width))  # 不超过墙段短边
+
+            edges.append({
+                "roomA": int(a),
+                "roomB": int(b),
+                "type": "wall",
+                "length": int(max(height, width)),
+                "width": int(thickness_value)
+            })
+
     return edges
 
-
-# ======================================================================
-# PUBLIC API
-# ======================================================================
 
 def detect_adjacency(region_id_map: np.ndarray,
                      wall_array: np.ndarray,

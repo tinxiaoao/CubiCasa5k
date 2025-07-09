@@ -6,7 +6,7 @@ from tqdm import tqdm
 from functools import partial
 
 from indoor_topology.detect_adjacency import detect_adjacency
-from indoor_topology.exterior_wall import exterior_wall_pixels
+from indoor_topology.exterior_wall import exterior_wall_segments
 from indoor_topology.extract_rooms import extract_rooms
 from indoor_topology.save_topology_image import save_topology_image, save_to_excel, save_rooms_excel
 
@@ -63,9 +63,9 @@ def process_sample(sample_dir: str):
 
     region_id_map, rooms, min_len, wall_outside_width = extract_rooms(wall_label_array)
     edges = detect_adjacency(region_id_map, wall_array, icon_array, wall_label_array, min_len)
-    room_ext_stats = exterior_wall_pixels(region_id_map,
-                                          wall_label_array,
-                                          wall_outside_width)  # wall_outside_width 来自 extract_rooms
+    room_ext_stats = exterior_wall_segments(region_id_map,
+                                            wall_label_array,
+                                            wall_outside_width)  # wall_outside_width 来自 extract_rooms
 
     # 保存
     name = os.path.basename(os.path.normpath(sample_dir))

@@ -4,7 +4,7 @@ import numpy as np
 import json
 
 img_path = r'E:\code\floor_data\cubicasa5k\high_quality_architectural\7795\svgImg_roughcast.png'  # 修改为你的文件名
-real_len = 5.38  # 若想脚本里直接指定真实长度，可赋值；否则运行中手动输入
+real_len = 6  # 若想脚本里直接指定真实长度，可赋值；否则运行中手动输入
 
 # 读取与显示
 img = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)

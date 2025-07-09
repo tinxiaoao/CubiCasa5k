@@ -159,37 +159,56 @@ def save_topology_image(region_id_map: np.ndarray,
 # --------------------------------------------------------------------------------------
 
 def save_to_excel(edges: List[Dict], save_path: str):
-    """列: 房间1 | 房间2 | 连接类型 | 数量 | length | width"""
+    """列: 房间1 | 房间2 | 连接类型 | 数量 | length | width (支持墙体分段信息，合并同一房间对墙体记录)"""
     en = {"door": "Door", "window": "Window", "wall": "Wall", "opening": "Opening"}
-    rows = [{
-        "RoomA": e["roomA"],
-        "RoomB": e["roomB"],
-        "ConnectionType": en.get(e["type"], e["type"]),
-        "Count": e.get("num", 1),
-        "Length": e["length"],
-        "Width": e["width"],
-    } for e in edges]
+
+    aggregated = {}
+    for e in edges:
+        key = (e["roomA"], e["roomB"], e["type"])
+        if e["type"] == "wall" and "segments" in e:
+            aggregated.setdefault(key, []).extend(e["segments"])
+        else:
+            aggregated.setdefault(key, []).append({"length": e["length"], "width": e["width"]})
+
+    rows = []
+    for (roomA, roomB, conn_type), segments in aggregated.items():
+        row = {
+            "RoomA": roomA,
+            "RoomB": roomB,
+            "ConnectionType": en.get(conn_type, conn_type),
+            "Count": len(segments)
+        }
+        for i, seg in enumerate(segments, 1):
+            row[f"Length_{i}"] = seg["length"]
+            row[f"Width_{i}"] = seg["width"]
+        rows.append(row)
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     pd.DataFrame(rows).to_excel(save_path, index=False)
 
 
-# --------------------------------------------------------------------------------------
-# 4️⃣ 房间属性表
-# --------------------------------------------------------------------------------------
 
-def save_rooms_excel(rooms: List[Dict], ext_stats: Dict[int, Tuple[int, int]], out_path: str):
-    """列: 房间ID | 类型 | 面积 | 周长 | 外墙 length | 外墙 width"""
+# 4️⃣ 房间属性表
+
+def save_rooms_excel(rooms: List[Dict], ext_stats: Dict[int, List[Tuple[str, int, int]]], out_path: str):
+    """列: 房间ID | 类型 | 面积 | 周长 | 外墙方向 | 外墙长度 | 外墙厚度 | (多个外墙分段依次类推)"""
     rows = []
     for r in rooms:
         rid = r["id"]
-        l, w = ext_stats.get(rid, (0, 0))
-        rows.append({
+        segments = ext_stats.get(rid, [])
+        row_data = {
             "RoomID": rid,
             "Type": r.get("room_type", ""),
             "Area": r["area"],
-            "Perimeter": r["perimeter"],
-            "ExtWallLength": l,
-            "ExtWallWidth": w,
-        })
+            "Perimeter": r["perimeter"]
+        }
+        # 每段外墙单独增加列
+        for idx, (wall_dir, length, thickness) in enumerate(segments, start=1):
+            row_data[f"WallDir_{idx}"] = wall_dir
+            row_data[f"ExtWallLength_{idx}"] = length
+            row_data[f"ExtWallWidth_{idx}"] = thickness
+
+        rows.append(row_data)
+
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     pd.DataFrame(rows).to_excel(out_path, index=False)
