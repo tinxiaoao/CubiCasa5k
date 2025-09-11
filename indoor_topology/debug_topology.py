@@ -5,9 +5,11 @@ import matplotlib.pyplot as plt
 import os
 
 from indoor_topology.detect_adjacency import detect_adjacency
-from indoor_topology.exterior_wall import exterior_wall_segments
+from indoor_topology.exterior_wall import exterior_wall_segments, exterior_opening_segments
 from indoor_topology.extract_rooms import extract_rooms
-from indoor_topology.save_topology_image import save_topology_image, save_to_excel, save_rooms_excel
+from indoor_topology.save_topology_image import (
+    save_topology_image, save_to_excel, save_rooms_excel, compose_room_stats
+)
 
 matplotlib.rcParams['font.sans-serif'] = ['SimHei']
 matplotlib.rcParams['axes.unicode_minus'] = False
@@ -39,10 +41,10 @@ def main():
     edges = detect_adjacency(region_id_map, wall_array, icon_array,
                              wall_label_array, max_wall_thickness=min_len)
 
-    # ---------房间自身损耗外墙 ----------
-    room_ext_stats = exterior_wall_segments(region_id_map,
-                                            wall_label_array,
-                                            wall_outside_width)  # wall_outside_width 来自 extract_rooms
+    # ---------房间自身损耗外墙 + 门窗 ----------
+    room_ext_stats = exterior_wall_segments(region_id_map, wall_label_array, wall_outside_width)
+    room_opening_stats = exterior_opening_segments(region_id_map, wall_label_array, icon_label_array,
+                                                   wall_outside_width)
 
     # ---------- 保存拓扑图 & Excel ----------
     OUT_DIR = "debug_output"
@@ -54,7 +56,8 @@ def main():
 
     save_topology_image(region_id_map, rooms, edges, rough_img_path, img_save)
     save_to_excel(edges, xlsx_save)  # 两参版本
-    save_rooms_excel(rooms, room_ext_stats, room_save)
+    room_stats = compose_room_stats(room_ext_stats, room_opening_stats)
+    save_rooms_excel(rooms, room_stats,room_save)
 
     # ---------- 可视化检查 ----------
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))

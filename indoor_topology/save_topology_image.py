@@ -3,13 +3,15 @@ import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from collections import defaultdict
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import cv2
 
 __all__ = [
     "build_topology_graph",
     "save_topology_image",
     "save_to_excel",
+    "save_rooms_excel",
+    "compose_room_stats",  # 新增
 ]
 
 
@@ -187,28 +189,97 @@ def save_to_excel(edges: List[Dict], save_path: str):
     pd.DataFrame(rows).to_excel(save_path, index=False)
 
 
+# 4️⃣ 房间属性表（升级版：同表包含外墙+门窗；可选额外 sheet 输出门窗明细）
+# 新增：把外墙与门窗合并成一个 stats
+def compose_room_stats(ext_wall_stats, opening_stats):
+    """
+    返回 combined_stats: { room_id: {"walls": [...], "openings": [...]} }
+      - walls    : [(wall_dir, length_px, thickness_px), ...]
+      - openings : [(type('door'/'window'), direction, length_px, thickness_px), ...]
+    """
+    combined = {}
+    rids = set(ext_wall_stats.keys()) | set(opening_stats.keys())
+    for rid in rids:
+        combined[rid] = {
+            "walls": ext_wall_stats.get(rid, []),
+            "openings": opening_stats.get(rid, [])
+        }
+    return combined
 
-# 4️⃣ 房间属性表
 
-def save_rooms_excel(rooms: List[Dict], ext_stats: Dict[int, List[Tuple[str, int, int]]], out_path: str):
-    """列: 房间ID | 类型 | 面积 | 周长 | 外墙方向 | 外墙长度 | 外墙厚度 | (多个外墙分段依次类推)"""
+def save_rooms_excel(rooms, room_stats, out_path, sheet_rooms_name: str = "Rooms"):
+    """
+    只写一个 sheet: Rooms
+    列：
+      RoomID | Type | Area | Perimeter |
+      WallDir_1 | ExtWallLength_1 | ExtWallWidth_1 | ...（直到 max 外墙段数）
+      OpenType_1 | OpenDir_1 | OpenLength_1 | OpenWidth_1 | ...（直到 max 门窗段数）
+    """
+    en_open = {"door": "Door", "window": "Window"}
+
+    # 预扫：统计各房间最大外墙段数与最大开口段数，稳定列顺序
+    max_walls = 0
+    max_opens = 0
+    for r in rooms:
+        rid = r["id"]
+        stats = room_stats.get(rid, {"walls": [], "openings": []})
+        max_walls = max(max_walls, len(stats.get("walls", [])))
+        max_opens = max(max_opens, len(stats.get("openings", [])))
+
     rows = []
     for r in rooms:
         rid = r["id"]
-        segments = ext_stats.get(rid, [])
-        row_data = {
+        stats = room_stats.get(rid, {"walls": [], "openings": []})
+        wall_segments = stats.get("walls", [])  # [(dir, L, T)]
+        open_segments = stats.get("openings", [])  # [(typ, dir, L, T)]
+
+        row = {
             "RoomID": rid,
             "Type": r.get("room_type", ""),
             "Area": r["area"],
-            "Perimeter": r["perimeter"]
+            "Perimeter": r["perimeter"],
         }
-        # 每段外墙单独增加列
-        for idx, (wall_dir, length, thickness) in enumerate(segments, start=1):
-            row_data[f"WallDir_{idx}"] = wall_dir
-            row_data[f"ExtWallLength_{idx}"] = length
-            row_data[f"ExtWallWidth_{idx}"] = thickness
 
-        rows.append(row_data)
+        # 外墙列（补齐到 max_walls）
+        for i in range(1, max_walls + 1):
+            if i <= len(wall_segments):
+                wall_dir, length, thickness = wall_segments[i - 1]
+                row[f"WallDir_{i}"] = wall_dir
+                row[f"ExtWallLength_{i}"] = int(length)
+                row[f"ExtWallWidth_{i}"] = int(thickness)
+            else:
+                row[f"WallDir_{i}"] = ""
+                row[f"ExtWallLength_{i}"] = None
+                row[f"ExtWallWidth_{i}"] = None
+
+        # 门窗列（补齐到 max_opens）
+        for j in range(1, max_opens + 1):
+            if j <= len(open_segments):
+                typ, direc, length, thickness = open_segments[j - 1]
+                row[f"OpenType_{j}"] = en_open.get(str(typ).lower(), typ)
+                row[f"OpenDir_{j}"] = direc
+                row[f"OpenLength_{j}"] = int(length)
+                row[f"OpenWidth_{j}"] = int(thickness)
+            else:
+                row[f"OpenType_{j}"] = ""
+                row[f"OpenDir_{j}"] = ""
+                row[f"OpenLength_{j}"] = None
+                row[f"OpenWidth_{j}"] = None
+
+        rows.append(row)
+
+    # 固定列顺序：基础 → 外墙全部 → 门窗全部
+    base_cols = ["RoomID", "Type", "Area", "Perimeter"]
+    wall_cols = []
+    for i in range(1, max_walls + 1):
+        wall_cols += [f"WallDir_{i}", f"ExtWallLength_{i}", f"ExtWallWidth_{i}"]
+    open_cols = []
+    for j in range(1, max_opens + 1):
+        open_cols += [f"OpenType_{j}", f"OpenDir_{j}", f"OpenLength_{j}", f"OpenWidth_{j}"]
+
+    df = pd.DataFrame(rows)
+    df = df[base_cols + wall_cols + open_cols]
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    pd.DataFrame(rows).to_excel(out_path, index=False)
+    with pd.ExcelWriter(out_path) as writer:
+        df.to_excel(writer, index=False, sheet_name=sheet_rooms_name)
